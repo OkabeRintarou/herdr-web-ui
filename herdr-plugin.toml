@@ -1,0 +1,30 @@
+id = "herdr-liveview"
+name = "herdr liveview"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Phoenix LiveView web UI for herdr: live agent status, terminal view, prompts and keys"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["sh", "scripts/plugin.sh", "build"]
+
+[[startup]]
+command = ["sh", "scripts/plugin.sh", "start"]
+
+[[actions]]
+id = "start"
+title = "Start herdr liveview"
+contexts = ["workspace"]
+command = ["sh", "scripts/plugin.sh", "start"]
+
+[[actions]]
+id = "status"
+title = "herdr liveview URL"
+contexts = ["workspace"]
+command = ["sh", "scripts/plugin.sh", "status"]
+
+[[actions]]
+id = "stop"
+title = "Stop herdr liveview"
+contexts = ["workspace"]
+command = ["sh", "scripts/plugin.sh", "stop"]
