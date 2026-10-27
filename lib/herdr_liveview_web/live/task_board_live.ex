@@ -4,6 +4,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   import HerdrLiveViewWeb.WorkflowGraph, only: [graph: 1]
 
   alias HerdrLiveView.Herdr.Panes
+  alias HerdrLiveView.Tasks
   alias HerdrLiveView.Tasks.{Demo, Runner, Workflow}
   alias HerdrLiveViewWeb.LiveTerminal
 
@@ -21,7 +22,10 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic())
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic())
+      Tasks.subscribe()
+    end
 
     {status, panes} = Panes.snapshot()
 
@@ -33,7 +37,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     {:ok,
      socket
      |> assign(status: status, panes: panes, stages: Demo.stages())
-     |> assign(tasks: Map.new(Demo.tasks(), &{&1.id, &1}), task: nil)
+     |> assign(tasks: Map.new(Tasks.list_tasks(), &{&1.id, &1}), task: nil)
      |> assign(form: new_task_form(), comment_form: comment_form())
      |> LiveTerminal.init()
      |> stream_columns()}
@@ -80,6 +84,8 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
   def handle_info(:terminal_poll, socket), do: {:noreply, LiveTerminal.handle_poll(socket)}
 
+  def handle_info({:task_saved, task}, socket), do: {:noreply, apply_task(socket, task)}
+
   def handle_info({:lead_proposal, id, version, feedback}, socket) do
     case socket.assigns.tasks[id] do
       %{step: "design"} = task ->
@@ -107,7 +113,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
         {:noreply,
          socket
-         |> put_task(task, "已创建（演示数据，刷新后丢失）")
+         |> put_task(task, "已创建")
          |> push_patch(to: ~p"/tasks/#{task.id}")}
 
       errors ->
@@ -1019,20 +1025,28 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   defp put_task(socket, task, message) do
+    case Tasks.save_task(task) do
+      {:ok, task} ->
+        socket = socket |> apply_task(task) |> assign(comment_form: comment_form())
+        if message, do: put_flash(socket, :info, "#{task.id} #{message}"), else: socket
+
+      {:error, changeset} ->
+        put_flash(socket, :error, "保存失败：#{inspect(changeset.errors)}")
+    end
+  end
+
+  defp apply_task(socket, task) do
     socket =
       socket
       |> assign(tasks: Map.put(socket.assigns.tasks, task.id, task))
       |> stream_columns()
 
-    socket =
-      if socket.assigns.task && socket.assigns.task.id == task.id,
-        do:
-          socket
-          |> assign(task: task, comment_form: comment_form())
-          |> LiveTerminal.watch(live_pane(socket.assigns.panes, task)),
-        else: socket
-
-    if message, do: put_flash(socket, :info, "#{task.id} #{message}"), else: socket
+    if socket.assigns.task && socket.assigns.task.id == task.id,
+      do:
+        socket
+        |> assign(task: task)
+        |> LiveTerminal.watch(live_pane(socket.assigns.panes, task)),
+      else: socket
   end
 
   defp stream_columns(socket) do

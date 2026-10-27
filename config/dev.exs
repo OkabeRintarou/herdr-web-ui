@@ -1,5 +1,11 @@
 import Config
 
+config :herdr_liveview, HerdrLiveView.Repo,
+  database: Path.expand("../.state/herdr_liveview_dev.db", __DIR__),
+  pool_size: 5
+
+config :herdr_liveview, seed_demo: true
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #

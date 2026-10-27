@@ -42,6 +42,10 @@ if config_env() != :test do
     access_token: token
 
   config :herdr_liveview, HerdrLiveViewWeb.Endpoint, http: [ip: ip]
+
+  if url = System.get_env("DATABASE_URL") do
+    config :herdr_liveview, HerdrLiveView.Repo, url: url
+  end
 end
 
 if config_env() == :dev do
@@ -74,6 +78,14 @@ if config_env() == :prod do
 
   System.get_env("HERDR_LIVEVIEW_TOKEN") ||
     raise "environment variable HERDR_LIVEVIEW_TOKEN is missing"
+
+  unless System.get_env("DATABASE_URL") do
+    config :herdr_liveview, HerdrLiveView.Repo,
+      database:
+        System.get_env("DATABASE_PATH") ||
+          raise("set DATABASE_PATH (SQLite file) or DATABASE_URL"),
+      pool_size: 5
+  end
 
   config :herdr_liveview, HerdrLiveViewWeb.Endpoint,
     url: [host: "localhost", scheme: "http"],

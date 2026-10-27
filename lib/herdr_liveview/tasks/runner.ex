@@ -9,7 +9,9 @@ defmodule HerdrLiveView.Tasks.Runner do
     source = attrs["workflow"] || "lead"
 
     %{
-      id: attrs["id"] || "t-" <> Integer.to_string(System.unique_integer([:positive])),
+      id:
+        attrs["id"] ||
+          "t-" <> Base.encode32(:crypto.strong_rand_bytes(4), case: :lower, padding: false),
       title: attrs["title"],
       description: attrs["description"] || "",
       priority: attrs["priority"] || "P2",

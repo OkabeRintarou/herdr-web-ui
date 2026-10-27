@@ -9,6 +9,7 @@ import Config
 
 config :herdr_liveview,
   namespace: HerdrLiveView,
+  ecto_repos: [HerdrLiveView.Repo],
   generators: [timestamp_type: :utc_datetime]
 
 # Configure the endpoint

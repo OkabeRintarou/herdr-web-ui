@@ -11,8 +11,13 @@ defmodule HerdrLiveView.Application do
       [
         HerdrLiveViewWeb.Telemetry,
         {DNSCluster, query: Application.get_env(:herdr_liveview, :dns_cluster_query) || :ignore},
-        {Phoenix.PubSub, name: HerdrLiveView.PubSub}
+        {Phoenix.PubSub, name: HerdrLiveView.PubSub},
+        HerdrLiveView.Repo,
+        {Ecto.Migrator,
+         repos: Application.fetch_env!(:herdr_liveview, :ecto_repos),
+         skip: not Application.get_env(:herdr_liveview, :migrate_on_boot, true)}
       ] ++
+        seed_children() ++
         herdr_children() ++
         [HerdrLiveViewWeb.Endpoint]
 
@@ -20,6 +25,12 @@ defmodule HerdrLiveView.Application do
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: HerdrLiveView.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp seed_children do
+    if Application.get_env(:herdr_liveview, :seed_demo, false),
+      do: [{Task, &HerdrLiveView.Tasks.seed_demo!/0}],
+      else: []
   end
 
   defp herdr_children do

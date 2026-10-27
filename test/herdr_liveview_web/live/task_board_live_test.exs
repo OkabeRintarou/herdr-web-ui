@@ -1,7 +1,19 @@
 defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
-  use HerdrLiveViewWeb.ConnCase, async: true
+  use HerdrLiveViewWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+
+  setup do
+    HerdrLiveView.Tasks.seed_demo!()
+  end
+
+  test "changes are persisted and survive a reload", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/tasks/t-102")
+    view |> element("#task-start") |> render_click()
+
+    {:ok, view, _html} = live(conn, ~p"/tasks")
+    assert has_element?(view, "#col-implement-cards #task-t-102")
+  end
 
   test "renders phase columns with demo tasks", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/tasks")

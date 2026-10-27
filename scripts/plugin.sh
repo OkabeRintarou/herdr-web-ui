@@ -41,6 +41,7 @@ setup_env() {
   export SECRET_KEY_BASE=$(secret secret_key_base)
   export HERDR_LIVEVIEW_TOKEN=$(secret token)
   export HERDR_SOCKET_PATH="$SOCKET"
+  export DATABASE_PATH="$STATE/tasks.db"
   export PHX_SERVER=true
   export RELEASE_NODE="herdr_liveview_$SID"
   export RELEASE_DISTRIBUTION=sname
