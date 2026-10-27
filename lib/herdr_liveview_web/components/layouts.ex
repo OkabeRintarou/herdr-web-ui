@@ -33,19 +33,30 @@ defmodule HerdrLiveViewWeb.Layouts do
 
   slot :inner_block, required: true
   slot :status, doc: "right side of the top bar"
+  attr :active, :atom, default: nil, doc: "highlighted top-level tab"
 
   def app(assigns) do
     ~H"""
     <div class="flex h-dvh flex-col bg-zinc-950 text-zinc-100 antialiased">
-      <header class="flex h-12 shrink-0 items-center justify-between border-b border-white/5 px-4">
-        <.link navigate={~p"/"} class="group flex items-center gap-2.5">
-          <span class="grid size-7 place-items-center rounded-lg bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/20 transition group-hover:bg-emerald-400/20">
-            <.icon name="hero-command-line-micro" class="size-4" />
-          </span>
-          <span class="text-sm font-semibold tracking-tight">herdr</span>
-          <span class="text-sm text-zinc-500">liveview</span>
-        </.link>
-        <div>{render_slot(@status)}</div>
+      <header class="flex h-12 shrink-0 items-center justify-between gap-4 border-b border-white/5 px-4">
+        <div class="flex items-center gap-3 sm:gap-6">
+          <.link navigate={~p"/"} class="group flex items-center gap-2.5">
+            <span class="grid size-7 place-items-center rounded-lg bg-emerald-400/10 text-emerald-400 ring-1 ring-emerald-400/20 transition group-hover:bg-emerald-400/20">
+              <.icon name="hero-command-line-micro" class="size-4" />
+            </span>
+            <span class="hidden text-sm font-semibold tracking-tight sm:inline">herdr</span>
+            <span class="hidden text-sm text-zinc-500 md:inline">liveview</span>
+          </.link>
+          <nav class="flex items-center gap-1 text-sm">
+            <.nav_tab navigate={~p"/tasks"} active={@active == :tasks} icon="hero-view-columns-micro">
+              看板
+            </.nav_tab>
+            <.nav_tab navigate={~p"/"} active={@active == :agents} icon="hero-cpu-chip-micro">
+              Agents
+            </.nav_tab>
+          </nav>
+        </div>
+        <div class="flex items-center gap-3">{render_slot(@status)}</div>
       </header>
       <main class="min-h-0 flex-1">
         {render_slot(@inner_block)}
@@ -53,6 +64,29 @@ defmodule HerdrLiveViewWeb.Layouts do
     </div>
 
     <.flash_group flash={@flash} />
+    """
+  end
+
+  attr :navigate, :string, required: true
+  attr :active, :boolean, default: false
+  attr :icon, :string, required: true
+  slot :inner_block, required: true
+
+  defp nav_tab(assigns) do
+    ~H"""
+    <.link
+      navigate={@navigate}
+      class={[
+        "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 whitespace-nowrap transition",
+        if(@active,
+          do: "bg-white/[0.07] text-zinc-100",
+          else: "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200"
+        )
+      ]}
+    >
+      <.icon name={@icon} class="size-4" />
+      {render_slot(@inner_block)}
+    </.link>
     """
   end
 

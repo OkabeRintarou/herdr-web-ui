@@ -3,8 +3,8 @@ defmodule HerdrLiveViewWeb.DashboardLive do
 
   alias HerdrLiveView.Herdr
   alias HerdrLiveView.Herdr.Panes
+  alias HerdrLiveViewWeb.LiveTerminal
 
-  @poll_ms 1_000
   @after_input_ms 150
 
   @impl true
@@ -15,7 +15,8 @@ defmodule HerdrLiveViewWeb.DashboardLive do
 
     {:ok,
      socket
-     |> assign(status: status, panes: panes, selected: nil, frame_hash: nil, poll_ref: nil)
+     |> assign(status: status, panes: panes, selected: nil)
+     |> LiveTerminal.init()
      |> assign(form: empty_form(), keys: Herdr.allowed_keys())
      |> stream_configure(:agents, dom_id: &"agent-#{dom_safe(&1["pane_id"])}")
      |> stream_agents()}
@@ -27,12 +28,11 @@ defmodule HerdrLiveViewWeb.DashboardLive do
 
     socket =
       socket
-      |> assign(selected: selected, frame_hash: nil, form: empty_form())
+      |> assign(selected: selected, form: empty_form())
       |> assign(page_title: page_title(socket.assigns.panes[selected]))
       |> stream_agents()
-      |> push_event("term:clear", %{})
 
-    {:noreply, restart_polling(socket, 0)}
+    {:noreply, LiveTerminal.watch(socket, selected)}
   end
 
   @impl true
@@ -44,10 +44,7 @@ defmodule HerdrLiveViewWeb.DashboardLive do
      |> stream_agents()}
   end
 
-  def handle_info(:poll, socket) do
-    socket = socket |> assign(poll_ref: nil) |> push_frame()
-    {:noreply, restart_polling(socket, @poll_ms)}
-  end
+  def handle_info(:terminal_poll, socket), do: {:noreply, LiveTerminal.handle_poll(socket)}
 
   @impl true
   def handle_event("validate", %{"prompt" => params}, socket) do
@@ -59,7 +56,8 @@ defmodule HerdrLiveViewWeb.DashboardLive do
          text when text != "" <- String.trim(text) do
       case Herdr.prompt(pane_id, text) do
         {:ok, _} ->
-          {:noreply, socket |> assign(form: empty_form()) |> restart_polling(@after_input_ms)}
+          {:noreply,
+           socket |> assign(form: empty_form()) |> LiveTerminal.watch(pane_id, @after_input_ms)}
 
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, "Prompt failed: #{format_error(reason)}")}
@@ -72,7 +70,7 @@ defmodule HerdrLiveViewWeb.DashboardLive do
   def handle_event("key", %{"key" => key}, socket) do
     case socket.assigns.selected && Herdr.send_key(socket.assigns.selected, key) do
       {:ok, _} ->
-        {:noreply, restart_polling(socket, @after_input_ms)}
+        {:noreply, LiveTerminal.watch(socket, socket.assigns.selected, @after_input_ms)}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Key #{key} failed: #{format_error(reason)}")}
@@ -85,7 +83,7 @@ defmodule HerdrLiveViewWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash}>
+    <Layouts.app flash={@flash} active={:agents}>
       <:status>
         <.connection status={@status} />
       </:status>
@@ -240,52 +238,6 @@ defmodule HerdrLiveViewWeb.DashboardLive do
     """
   end
 
-  attr :status, :string, default: nil
-
-  defp status_badge(assigns) do
-    ~H"""
-    <span class={[
-      "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset",
-      status_classes(@status)
-    ]}>
-      <span class={[
-        "size-1.5 rounded-full bg-current",
-        @status == "working" && "motion-safe:animate-pulse"
-      ]} />
-      {@status || "unknown"}
-    </span>
-    """
-  end
-
-  attr :status, :any, required: true
-
-  defp connection(assigns) do
-    ~H"""
-    <span
-      id="herdr-connection"
-      class={[
-        "inline-flex items-center gap-1.5 text-xs",
-        if(@status == :connected, do: "text-zinc-400", else: "text-amber-400")
-      ]}
-    >
-      <span class={[
-        "size-1.5 rounded-full",
-        if(@status == :connected,
-          do: "bg-emerald-400",
-          else: "bg-amber-400 motion-safe:animate-pulse"
-        )
-      ]} />
-      {if @status == :connected, do: "herdr connected", else: "herdr disconnected — retrying"}
-    </span>
-    """
-  end
-
-  defp status_classes("working"), do: "bg-sky-400/10 text-sky-300 ring-sky-400/20"
-  defp status_classes("blocked"), do: "bg-amber-400/10 text-amber-300 ring-amber-400/30"
-  defp status_classes("done"), do: "bg-emerald-400/10 text-emerald-300 ring-emerald-400/20"
-  defp status_classes("idle"), do: "bg-zinc-400/10 text-zinc-300 ring-zinc-400/20"
-  defp status_classes(_), do: "bg-zinc-500/10 text-zinc-500 ring-zinc-500/20"
-
   defp stream_agents(socket) do
     agents =
       socket.assigns.panes
@@ -297,32 +249,6 @@ defmodule HerdrLiveViewWeb.DashboardLive do
     |> assign(agent_count: length(agents))
     |> stream(:agents, agents, reset: true)
   end
-
-  defp restart_polling(socket, delay) do
-    if ref = socket.assigns.poll_ref, do: Process.cancel_timer(ref)
-
-    ref =
-      if connected?(socket) and socket.assigns.selected,
-        do: Process.send_after(self(), :poll, delay)
-
-    assign(socket, poll_ref: ref)
-  end
-
-  defp push_frame(%{assigns: %{selected: pane_id}} = socket) when is_binary(pane_id) do
-    case Herdr.read_pane(pane_id) do
-      {:ok, text} ->
-        hash = :erlang.phash2(text)
-
-        if hash == socket.assigns.frame_hash,
-          do: socket,
-          else: socket |> assign(frame_hash: hash) |> push_event("term:frame", %{text: text})
-
-      {:error, _reason} ->
-        socket
-    end
-  end
-
-  defp push_frame(socket), do: socket
 
   defp empty_form, do: to_form(%{"text" => ""}, as: :prompt)
 

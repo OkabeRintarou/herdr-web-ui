@@ -81,6 +81,7 @@ defmodule HerdrLiveViewWeb do
       import Phoenix.HTML
       # Core UI components
       import HerdrLiveViewWeb.CoreComponents
+      import HerdrLiveViewWeb.HerdrComponents
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS

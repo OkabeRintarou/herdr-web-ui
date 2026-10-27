@@ -24,11 +24,24 @@ config :herdr_liveview, HerdrLiveViewWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 if config_env() != :test do
+  token = System.get_env("HERDR_LIVEVIEW_TOKEN")
+
+  {:ok, ip} =
+    System.get_env("HERDR_LIVEVIEW_IP", "127.0.0.1")
+    |> String.to_charlist()
+    |> :inet.parse_address()
+
+  if token in [nil, ""] and ip not in [{127, 0, 0, 1}, {0, 0, 0, 0, 0, 0, 0, 1}] do
+    raise "HERDR_LIVEVIEW_TOKEN must be set when listening on #{:inet.ntoa(ip)}"
+  end
+
   # herdr injects HERDR_SOCKET_PATH into plugin processes; fall back to the default session.
   config :herdr_liveview,
     herdr_socket_path:
       System.get_env("HERDR_SOCKET_PATH") || Path.expand("~/.config/herdr/herdr.sock"),
-    access_token: System.get_env("HERDR_LIVEVIEW_TOKEN")
+    access_token: token
+
+  config :herdr_liveview, HerdrLiveViewWeb.Endpoint, http: [ip: ip]
 end
 
 if config_env() == :dev do
@@ -62,14 +75,8 @@ if config_env() == :prod do
   System.get_env("HERDR_LIVEVIEW_TOKEN") ||
     raise "environment variable HERDR_LIVEVIEW_TOKEN is missing"
 
-  {:ok, ip} =
-    System.get_env("HERDR_LIVEVIEW_IP", "127.0.0.1")
-    |> String.to_charlist()
-    |> :inet.parse_address()
-
   config :herdr_liveview, HerdrLiveViewWeb.Endpoint,
     url: [host: "localhost", scheme: "http"],
-    http: [ip: ip],
     check_origin: :conn,
     secret_key_base: secret_key_base
 

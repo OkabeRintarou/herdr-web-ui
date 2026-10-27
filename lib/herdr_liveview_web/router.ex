@@ -21,6 +21,9 @@ defmodule HerdrLiveViewWeb.Router do
     live_session :default, on_mount: {HerdrLiveViewWeb.Auth, :require_auth} do
       live "/", DashboardLive, :index
       live "/panes/:pane_id", DashboardLive, :show
+      live "/tasks", TaskBoardLive, :index
+      live "/tasks/new", TaskBoardLive, :new
+      live "/tasks/:id", TaskBoardLive, :show
     end
   end
 
