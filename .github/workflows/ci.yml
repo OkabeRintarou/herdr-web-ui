@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Keep in sync with mise.toml.
+env:
+  OTP_VERSION: "28.5"
+  ELIXIR_VERSION: "1.20.4"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          version-type: strict
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-${{ hashFiles('mix.lock') }}
+          restore-keys: test-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-
+
+      - run: mix deps.get
+      - run: mix deps.unlock --check-unused
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  # Same steps the herdr plugin runs on install (scripts/plugin.sh build).
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          version-type: strict
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: prod-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-${{ hashFiles('mix.lock') }}
+          restore-keys: prod-${{ runner.os }}-${{ env.OTP_VERSION }}-${{ env.ELIXIR_VERSION }}-
+
+      - run: mix deps.get --only prod
+      - run: mix assets.setup
+      - run: mix compile --warnings-as-errors
+      - run: mix assets.deploy
+      - run: mix release --overwrite
