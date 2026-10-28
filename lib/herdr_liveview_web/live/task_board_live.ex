@@ -1344,8 +1344,9 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
           []
       end
 
+    # remote folders were checked when the project was created; ssh per keystroke is too slow
     herdr =
-      if params["executor"] == "herdr" do
+      if params["executor"] == "herdr" and project.host.kind == "local" do
         [
           not File.dir?(project.path) &&
             {:executor, {"项目目录 #{project.path} 不存在，无法真实执行", []}}

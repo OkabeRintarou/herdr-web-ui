@@ -8,6 +8,7 @@ defmodule HerdrLiveView.Engine.Agents do
   when its member assignment changed, or when flagged `retire` (replan, or a human asked).
   """
   alias HerdrLiveView.Engine.Step
+  alias HerdrLiveView.Hosts.Shell
 
   @max_uses 3
   @wake_after_s 30 * 60
@@ -39,12 +40,12 @@ defmodule HerdrLiveView.Engine.Agents do
   def retire_all(agents),
     do: Map.new(agents, fn {role, a} -> {role, Map.put(a, "retire", true)} end)
 
-  def used(agent, task, now) do
+  def used(host, agent, task, now) do
     Map.merge(agent, %{
       "step" => Step.key(task),
       "uses" => (agent["uses"] || 0) + 1,
       "last_used" => DateTime.to_unix(now),
-      "head" => head(task.workdir)
+      "head" => head(host, task.workdir)
     })
   end
 
@@ -68,12 +69,13 @@ defmodule HerdrLiveView.Engine.Agents do
   end
 
   @doc "Told to an instance coming back after a long pause or after others committed."
-  def wake_up(task, agent, now) do
+  def wake_up(host, task, agent, now) do
     idle_s = if agent["last_used"], do: DateTime.to_unix(now) - agent["last_used"], else: 0
-    head = head(task.workdir)
+    head = head(host, task.workdir)
 
     commits =
-      if agent["head"] && head && agent["head"] != head, do: log(task.workdir, agent["head"])
+      if agent["head"] && head && agent["head"] != head,
+        do: log(host, task.workdir, agent["head"])
 
     cond do
       commits not in [nil, ""] ->
@@ -87,20 +89,16 @@ defmodule HerdrLiveView.Engine.Agents do
     end
   end
 
-  defp head(dir) do
-    case System.cmd("git", ["-C", dir, "rev-parse", "HEAD"], stderr_to_stdout: true) do
-      {sha, 0} -> String.trim(sha)
+  defp head(host, dir) do
+    case Shell.git(host, dir, ["rev-parse", "HEAD"]) do
+      {:ok, sha} -> sha
       _ -> nil
     end
-  rescue
-    _ -> nil
   end
 
-  defp log(dir, since) do
-    case System.cmd("git", ["-C", dir, "log", "--oneline", "-n", "20", "#{since}..HEAD"],
-           stderr_to_stdout: true
-         ) do
-      {out, 0} -> String.trim(out)
+  defp log(host, dir, since) do
+    case Shell.git(host, dir, ["log", "--oneline", "-n", "20", "#{since}..HEAD"]) do
+      {:ok, out} -> out
       _ -> nil
     end
   end

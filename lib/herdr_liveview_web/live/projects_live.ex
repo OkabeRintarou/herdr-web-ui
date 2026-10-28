@@ -3,6 +3,7 @@ defmodule HerdrLiveViewWeb.ProjectsLive do
 
   alias HerdrLiveView.Herdr.Panes
   alias HerdrLiveView.{Hosts, Projects, Tasks}
+  alias HerdrLiveView.Hosts.Host
 
   @impl true
   def mount(_params, _session, socket) do
@@ -17,7 +18,8 @@ defmodule HerdrLiveViewWeb.ProjectsLive do
      socket
      |> assign(
        hosts: hosts,
-       host_status: Map.new(hosts, &{&1.id, elem(Panes.snapshot(&1.id), 0)})
+       host_status: Map.new(hosts, &{&1.id, elem(Panes.snapshot(&1.id), 0)}),
+       host_checks: %{}
      )
      |> assign(page_title: "项目")
      |> stream_configure(:attention, dom_id: &"attention-#{&1.id}")
@@ -31,7 +33,12 @@ defmodule HerdrLiveViewWeb.ProjectsLive do
         do: to_form(Projects.change_project(%Projects.Project{}, default_attrs(socket))),
         else: nil
 
-    {:noreply, assign(socket, form: form, slug_touched: false)}
+    host_form =
+      if socket.assigns.live_action == :new_host,
+        do: to_form(Hosts.change_host(%Host{kind: "ssh"}), as: :host),
+        else: nil
+
+    {:noreply, assign(socket, form: form, host_form: host_form, slug_touched: false)}
   end
 
   @impl true
@@ -63,6 +70,39 @@ defmodule HerdrLiveViewWeb.ProjectsLive do
      assign(socket, form: to_form(changeset, action: :validate), slug_touched: slug_touched)}
   end
 
+  def handle_event("validate_host", %{"host" => params}, socket) do
+    changeset =
+      Hosts.change_host(%Host{}, Map.merge(params, %{"id" => "h-pending", "kind" => "ssh"}))
+
+    {:noreply, assign(socket, host_form: to_form(changeset, action: :validate, as: :host))}
+  end
+
+  def handle_event("create_host", %{"host" => params}, socket) do
+    case Hosts.create_host(Map.put(params, "kind", "ssh")) do
+      {:ok, host} ->
+        Hosts.connect(host)
+        hosts = Hosts.list_hosts()
+        Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic(host.id))
+
+        {:noreply,
+         socket
+         |> assign(hosts: hosts)
+         |> put_flash(:info, "已添加 #{host.name}，正在连接")
+         |> push_patch(to: ~p"/")
+         |> check_host(host)}
+
+      {:error, changeset} ->
+        {:noreply, assign(socket, host_form: to_form(changeset, as: :host))}
+    end
+  end
+
+  def handle_event("check_host", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.hosts, &(&1.id == id)) do
+      nil -> {:noreply, socket}
+      host -> {:noreply, check_host(socket, host)}
+    end
+  end
+
   def handle_event("create", %{"project" => params}, socket) do
     case Projects.create_project(params) do
       {:ok, project} ->
@@ -74,6 +114,21 @@ defmodule HerdrLiveViewWeb.ProjectsLive do
       {:error, changeset} ->
         {:noreply, assign(socket, form: to_form(changeset))}
     end
+  end
+
+  @impl true
+  def handle_async({:check, id}, {:ok, results}, socket),
+    do: {:noreply, update(socket, :host_checks, &Map.put(&1, id, results))}
+
+  def handle_async({:check, id}, {:exit, reason}, socket) do
+    results = [{"检测", {:error, inspect(reason)}}]
+    {:noreply, update(socket, :host_checks, &Map.put(&1, id, results))}
+  end
+
+  defp check_host(socket, host) do
+    socket
+    |> update(:host_checks, &Map.put(&1, host.id, :running))
+    |> start_async({:check, host.id}, fn -> Hosts.check(host) end)
   end
 
   @impl true
@@ -168,7 +223,140 @@ defmodule HerdrLiveViewWeb.ProjectsLive do
               </.link>
             </li>
           </ul>
+
+          <div class="mt-8 flex items-center justify-between">
+            <h2 class="text-xs font-medium tracking-wider text-zinc-500 uppercase">Hosts</h2>
+            <.link
+              id="new-host"
+              patch={~p"/hosts/new"}
+              class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+            >
+              <.icon name="hero-plus-micro" class="size-4" /> SSH Host
+            </.link>
+          </div>
+          <ul id="hosts" class="mt-3 space-y-2">
+            <li
+              :for={host <- @hosts}
+              id={"host-#{host.id}"}
+              class="rounded-xl bg-zinc-900/60 p-3 ring-1 ring-white/5"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <div class="min-w-0">
+                  <p class="flex items-center gap-1.5 text-sm font-medium">
+                    <span class={[
+                      "size-1.5 rounded-full",
+                      if(@host_status[host.id] == :connected,
+                        do: "bg-emerald-400",
+                        else: "bg-amber-400"
+                      )
+                    ]} />
+                    {host.name}
+                  </p>
+                  <p class="mt-0.5 truncate font-mono text-[11px] text-zinc-500">
+                    {if host.kind == "ssh", do: "ssh #{host.ssh_target}", else: "本机"} · 最多 {host.max_agents} 个 agent
+                  </p>
+                </div>
+                <button
+                  id={"check-host-#{host.id}"}
+                  type="button"
+                  phx-click="check_host"
+                  phx-value-id={host.id}
+                  disabled={@host_checks[host.id] == :running}
+                  class="shrink-0 rounded-md px-2 py-1 text-xs whitespace-nowrap text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200 disabled:opacity-50"
+                >
+                  {if @host_checks[host.id] == :running, do: "检测中…", else: "检测连接"}
+                </button>
+              </div>
+              <ul
+                :if={is_list(@host_checks[host.id])}
+                id={"host-checks-#{host.id}"}
+                class="mt-2 space-y-0.5 text-xs"
+              >
+                <li
+                  :for={{label, result} <- @host_checks[host.id]}
+                  class={if(result == :ok, do: "text-emerald-300", else: "text-rose-300")}
+                >
+                  {if result == :ok, do: "✓", else: "✗"} {label}
+                  <span :if={result != :ok} class="block pl-4 break-all text-rose-300/80">
+                    {elem(result, 1)}
+                  </span>
+                </li>
+              </ul>
+            </li>
+          </ul>
         </aside>
+      </div>
+
+      <div
+        :if={@live_action == :new_host and @host_form}
+        id="new-host-modal"
+        class="fixed inset-0 z-40 grid place-items-center p-4"
+        phx-window-keydown="close"
+        phx-key="Escape"
+      >
+        <button
+          type="button"
+          phx-click="close"
+          aria-label="关闭"
+          class="absolute inset-0 cursor-default bg-black/60 backdrop-blur-sm"
+        />
+        <div class="relative w-full max-w-lg rounded-2xl bg-zinc-900 p-6 shadow-2xl ring-1 shadow-black/60 ring-white/10">
+          <h2 class="text-base font-semibold">添加 SSH Host</h2>
+          <p class="mt-1 text-xs text-zinc-500">
+            需要能免密登录（ssh 密钥或 agent），远端已安装 git 并运行着 herdr。
+          </p>
+          <.form
+            for={@host_form}
+            id="new-host-form"
+            phx-change="validate_host"
+            phx-submit="create_host"
+            class="mt-5 space-y-4 [&_.fieldset]:mb-0"
+          >
+            <.labeled label="名称">
+              <.input
+                field={@host_form[:name]}
+                type="text"
+                placeholder="例如 gpu-box"
+                class={field_class()}
+              />
+            </.labeled>
+            <.labeled label="ssh 目标（user@host 或 ~/.ssh/config 里的别名）">
+              <.input
+                field={@host_form[:ssh_target]}
+                type="text"
+                placeholder="me@10.0.0.5"
+                class={[field_class(), "font-mono"]}
+              />
+            </.labeled>
+            <.labeled label="远端 herdr socket">
+              <.input
+                field={@host_form[:remote_socket]}
+                type="text"
+                placeholder="~/.config/herdr/sessions/<会话名>/herdr.sock"
+                class={[field_class(), "font-mono"]}
+              />
+            </.labeled>
+            <.labeled label="最多同时运行的 agent">
+              <.input field={@host_form[:max_agents]} type="number" class={field_class()} />
+            </.labeled>
+            <div class="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                phx-click="close"
+                class="rounded-lg px-3 py-2 text-sm text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
+              >
+                取消
+              </button>
+              <button
+                id="new-host-submit"
+                type="submit"
+                class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400 active:scale-[0.98]"
+              >
+                添加
+              </button>
+            </div>
+          </.form>
+        </div>
       </div>
 
       <div

@@ -1,0 +1,52 @@
+#!/bin/sh
+# Stand-in for ssh in tests: drops the options and target and runs the command locally.
+# With -N -L local:remote it forwards the unix socket like `ssh -N -L` would.
+forward=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift 2 ;;
+    -L) forward="$2"; shift 2 ;;
+    -N) shift ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+shift # target
+
+if [ -n "$forward" ]; then
+  exec python3 - "${forward%%:*}" "${forward#*:}" <<'EOF'
+import os, socket, sys, threading
+local, remote = sys.argv[1], sys.argv[2]
+try:
+    os.unlink(local)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX)
+server.bind(local)
+server.listen(16)
+
+def pipe(src, dst):
+    try:
+        while True:
+            data = src.recv(65536)
+            if not data:
+                break
+            dst.sendall(data)
+    except OSError:
+        pass
+    finally:
+        try:
+            dst.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+while True:
+    client, _ = server.accept()
+    upstream = socket.socket(socket.AF_UNIX)
+    upstream.connect(remote)
+    threading.Thread(target=pipe, args=(client, upstream), daemon=True).start()
+    threading.Thread(target=pipe, args=(upstream, client), daemon=True).start()
+EOF
+fi
+
+exec sh -c "$1"

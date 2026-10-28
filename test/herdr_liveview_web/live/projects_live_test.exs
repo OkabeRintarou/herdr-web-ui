@@ -45,6 +45,38 @@ defmodule HerdrLiveViewWeb.ProjectsLiveTest do
     assert has_element?(view, "#attention", "新问题")
   end
 
+  test "adds an ssh host and checks its connection", %{conn: conn} do
+    Application.put_env(
+      :herdr_liveview,
+      :ssh_command,
+      Path.expand("../../support/fake_ssh", __DIR__)
+    )
+
+    on_exit(fn -> Application.delete_env(:herdr_liveview, :ssh_command) end)
+
+    {:ok, view, _html} = live(conn, ~p"/hosts/new")
+
+    view
+    |> form("#new-host-form", host: %{name: "gpu", ssh_target: "-bad", remote_socket: "x"})
+    |> render_change()
+
+    assert has_element?(view, "#new-host-form", "只能是 user@host")
+
+    view
+    |> form("#new-host-form",
+      host: %{name: "gpu", ssh_target: "me@gpu", remote_socket: "/nowhere/herdr.sock"}
+    )
+    |> render_submit()
+
+    assert_patch(view, ~p"/")
+    host = Enum.find(HerdrLiveView.Hosts.list_hosts(), &(&1.name == "gpu"))
+    assert has_element?(view, "#host-#{host.id}", "ssh me@gpu")
+
+    render_async(view)
+    assert has_element?(view, "#host-checks-#{host.id}", "✓ ssh 连接 me@gpu")
+    assert has_element?(view, "#host-checks-#{host.id}", "/nowhere/herdr.sock 不存在")
+  end
+
   test "creates a project, deriving the slug and checking the folder", %{
     conn: conn,
     tmp_dir: dir

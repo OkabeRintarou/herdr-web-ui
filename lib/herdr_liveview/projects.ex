@@ -20,6 +20,7 @@ defmodule HerdrLiveView.Projects do
     %Project{}
     |> Project.changeset(attrs)
     |> validate_local_path()
+    |> validate_remote_path()
     |> Repo.insert()
     |> case do
       {:ok, project} ->
@@ -46,6 +47,24 @@ defmodule HerdrLiveView.Projects do
         changeset
     end
   end
+
+  # Over ssh, so only on create rather than on every keystroke.
+  defp validate_remote_path(%{valid?: true} = changeset) do
+    host_id = Ecto.Changeset.get_field(changeset, :host_id)
+    path = Ecto.Changeset.get_field(changeset, :path)
+
+    case host_id && HerdrLiveView.Hosts.get_host(host_id) do
+      %{kind: "ssh"} = host ->
+        if HerdrLiveView.Hosts.Shell.dir?(host, path),
+          do: changeset,
+          else: Ecto.Changeset.add_error(changeset, :path, "#{host.name} 上没有这个目录（或连不上）")
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp validate_remote_path(changeset), do: changeset
 
   @doc "Makes sure at least one project exists so pre-project tasks have a home."
   def ensure_default!(host) do

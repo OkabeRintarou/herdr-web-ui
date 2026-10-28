@@ -3,6 +3,7 @@ defmodule HerdrLiveView.Engine.Step do
   The contract between the engine and an agent for one step visit: where the task's files live,
   the instruction text, and the JSON result file the agent must write to finish the step.
   """
+  alias HerdrLiveView.Hosts.Shell
   alias HerdrLiveView.Tasks.Workflow
 
   @dir ".herdr-tasks"
@@ -19,10 +20,10 @@ defmodule HerdrLiveView.Engine.Step do
   def allowed_verdicts(task), do: Enum.map(Workflow.outcomes(task.workflow, task.step), & &1.on)
 
   @doc "Reads the result file: `{:ok, verdict, summary}`, `:missing` or `{:invalid, reason}`."
-  def read_result(task) do
+  def read_result(task, host \\ nil) do
     allowed = allowed_verdicts(task)
 
-    with {:ok, body} <- File.read(result_path(task)),
+    with {:ok, body} <- Shell.read(host, result_path(task)),
          {:ok, %{"verdict" => verdict} = json} <- Jason.decode(body),
          true <- verdict in allowed || {:invalid, "verdict 必须是 #{Enum.join(allowed, " / ")} 之一"} do
       {:ok, verdict, summary(json["summary"])}

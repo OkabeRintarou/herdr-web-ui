@@ -8,6 +8,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   alias HerdrLiveView.Engine.{Agents, Design, Herdr, Step}
   alias HerdrLiveView.Herdr.Panes
+  alias HerdrLiveView.Hosts.Shell
   alias HerdrLiveView.{Projects, Tasks, Teams, Worktrees}
   alias HerdrLiveView.Tasks.Runner
 
@@ -143,7 +144,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   defp send_step(%{task: task, host: host} = state) do
     role = Runner.current_step(task).role
-    File.mkdir_p!(Step.task_dir(task))
+    Shell.mkdir_p!(host, Step.task_dir(task))
     # re-read so edits to the team's member templates apply to the next agent we start
     state = %{state | team: Teams.get_team(task.team_id)}
 
@@ -159,11 +160,11 @@ defmodule HerdrLiveView.Engine.TaskWorker do
       intro =
         if (agent["uses"] || 0) == 0,
           do: Agents.handoff(task, agent),
-          else: Agents.wake_up(task, agent, now)
+          else: Agents.wake_up(host, task, agent, now)
 
       case Herdr.impl().prompt(host, agent["name"], intro <> body) do
         :ok ->
-          agents = Map.put(task.agents, role, Agents.used(agent, task, now))
+          agents = Map.put(task.agents, role, Agents.used(host, agent, task, now))
           {:ok, task} = Tasks.save_task(%{task | agents: agents, agent_status: "working"})
 
           %{
@@ -444,10 +445,10 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     end
   end
 
-  defp read_result(%{task: %{step: "design"} = task, team: team}),
-    do: Design.read_plan(task, team)
+  defp read_result(%{task: %{step: "design"} = task, team: team, host: host}),
+    do: Design.read_plan(task, team, host)
 
-  defp read_result(%{task: task}), do: Step.read_result(task)
+  defp read_result(%{task: task, host: host}), do: Step.read_result(task, host)
 
   defp nudge(%{nudged: false, task: task} = state, problem) do
     text = problem <> "请按之前的要求写入 JSON 结果文件后结束本轮。"

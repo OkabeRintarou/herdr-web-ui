@@ -5,6 +5,7 @@ defmodule HerdrLiveView.Engine.Design do
   a human for approval; the rest go back to the lead with the reasons.
   """
   alias HerdrLiveView.Engine.Step
+  alias HerdrLiveView.Hosts.Shell
   alias HerdrLiveView.Tasks.Workflow
   alias HerdrLiveView.Teams
 
@@ -43,8 +44,8 @@ defmodule HerdrLiveView.Engine.Design do
   end
 
   @doc "`{:ok, workflow}`, `:missing` or `{:invalid, reason}`."
-  def read_plan(task, team) do
-    with {:ok, body} <- File.read(Step.result_path(task)),
+  def read_plan(task, team, host \\ nil) do
+    with {:ok, body} <- Shell.read(host, Step.result_path(task)),
          {:ok, plan} <- decode(body),
          {:ok, workflow} <- build(plan, task),
          :ok <- check(workflow, team) do
