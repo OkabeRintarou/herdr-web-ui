@@ -15,6 +15,14 @@ defmodule HerdrLiveView.Fixtures do
     host
   end
 
+  @doc "A scratch folder outside this repo (ExUnit's tmp_dir is inside it, so it counts as git)."
+  def scratch_dir! do
+    dir = Path.join(System.tmp_dir!(), "hlv-test-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
   def project_fixture(attrs \\ %{}) do
     host = attrs[:host] || host_fixture()
     n = System.unique_integer([:positive])

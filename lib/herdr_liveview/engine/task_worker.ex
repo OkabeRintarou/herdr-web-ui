@@ -8,7 +8,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   alias HerdrLiveView.Engine.{Herdr, Step}
   alias HerdrLiveView.Herdr.Panes
-  alias HerdrLiveView.{Projects, Tasks, Teams}
+  alias HerdrLiveView.{Projects, Tasks, Teams, Worktrees}
   alias HerdrLiveView.Tasks.Runner
 
   @tick_ms 5_000
@@ -30,6 +30,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
      %{
        task_id: task_id,
        task: nil,
+       project: nil,
        host: nil,
        team: nil,
        dispatched: nil,
@@ -45,9 +46,9 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   @impl true
   def handle_info(:sync, state) do
     with %{} = task <- Tasks.get_task(state.task_id),
-         %{host: host} <- task.project_id && Projects.get_project(task.project_id) do
+         %{host: host} = project <- task.project_id && Projects.get_project(task.project_id) do
       Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic(host.id))
-      state = %{state | host: host, team: Teams.get_team(task.team_id)}
+      state = %{state | project: project, host: host, team: Teams.get_team(task.team_id)}
       handle_task(task, recover(task, state))
     else
       _ -> {:stop, :normal, state}
@@ -126,7 +127,21 @@ defmodule HerdrLiveView.Engine.TaskWorker do
       Runner.agent_step?(task)
   end
 
-  defp dispatch(%{task: task, host: host} = state) do
+  defp dispatch(%{task: task} = state) do
+    case Worktrees.ensure(state.project, task) do
+      {:ok, ^task} ->
+        send_step(state)
+
+      {:ok, task} ->
+        {:ok, task} = Tasks.save_task(task)
+        send_step(%{state | task: task})
+
+      {:error, reason} ->
+        escalate(state, "无法创建 worktree：#{reason}")
+    end
+  end
+
+  defp send_step(%{task: task, host: host} = state) do
     role = Runner.current_step(task).role
     File.mkdir_p!(Step.task_dir(task))
     # re-read so edits to the team's member templates apply to the next agent we start

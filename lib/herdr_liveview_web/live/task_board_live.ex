@@ -4,7 +4,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   import HerdrLiveViewWeb.WorkflowGraph, only: [graph: 1]
 
   alias HerdrLiveView.Herdr.Panes
-  alias HerdrLiveView.{Tasks, Teams}
+  alias HerdrLiveView.{Tasks, Teams, Worktrees}
   alias HerdrLiveView.Tasks.{Demo, Runner, Workflow}
   alias HerdrLiveViewWeb.LiveTerminal
 
@@ -181,6 +181,15 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
       version = task.proposal.workflow.version + 1
       schedule_lead(task, version, blank_to_nil(text))
       {Runner.redesign(task, now()), "已让 lead 重新设计"}
+    end)
+  end
+
+  def handle_event("cleanup_worktree", %{"id" => id}, socket) do
+    with_task(socket, id, fn task ->
+      case Worktrees.remove(socket.assigns.project, task) do
+        {:ok, task} -> {task, "worktree 已清理，分支 #{task.branch} 保留"}
+        {:error, reason} -> {task, "清理失败：#{reason}"}
+      end
     end)
   end
 
@@ -457,7 +466,12 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               </span>
             </div>
             <h2 class="mt-1 truncate text-lg font-semibold tracking-tight">{@task.title}</h2>
-            <p class="mt-0.5 font-mono text-xs text-zinc-500">{@task.workdir}</p>
+            <p class="mt-0.5 font-mono text-xs text-zinc-500">
+              {@task.workdir}
+              <span :if={@task.branch} id="task-branch" class="text-zinc-400">
+                · <.icon name="hero-code-bracket-micro" class="size-3" /> {@task.branch}
+              </span>
+            </p>
             <p
               :if={@task.agents != %{}}
               id="task-agents"
@@ -478,6 +492,16 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               primary
             >
               开始
+            </.action_button>
+            <.action_button
+              :if={@task.stage == :done and @task.worktree}
+              id="task-cleanup-worktree"
+              event="cleanup_worktree"
+              task_id={@task.id}
+              icon="hero-trash-micro"
+              confirm={"删除 worktree #{@task.worktree}？分支 #{@task.branch} 会保留，未提交的改动和 .herdr-tasks 产出会一并删除。"}
+            >
+              清理 worktree
             </.action_button>
             <.action_button
               :if={@task.stage in [:plan, :implement]}

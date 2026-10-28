@@ -7,9 +7,8 @@ defmodule HerdrLiveView.EngineTest do
   alias HerdrLiveView.Engine.Step
   alias HerdrLiveView.Tasks.Runner
 
-  @moduletag :tmp_dir
-
-  setup %{tmp_dir: dir} do
+  setup do
+    dir = scratch_dir!()
     project = project_fixture(%{path: dir})
     start_supervised!({FakeHerdr, {self(), project.host_id}})
     start_supervised!(Engine)
@@ -26,7 +25,7 @@ defmodule HerdrLiveView.EngineTest do
         "workdir" => project.path
       })
 
-    %{task: task}
+    %{task: task, dir: dir}
   end
 
   defp start(task) do
@@ -164,6 +163,20 @@ defmodule HerdrLiveView.EngineTest do
     refute_received {:herdr, {:create_workspace, _, _, _}}
     refute_received {:herdr, {:start_agent, _, _}}
     assert %{pane_id: ^pane} = await_task(&(&1.pane_id == pane))
+  end
+
+  test "in a git project the agents work in the task's own worktree", %{task: task, dir: dir} do
+    HerdrLiveView.WorktreesTest.init_repo!(dir)
+    task = start(task)
+
+    worktree = Path.join([dir, ".herdr-worktrees", task.id])
+    assert_receive {:herdr, {:create_workspace, ^worktree, _, _}}
+    assert_receive {:herdr, {:prompt, _, prompt}}
+    assert prompt =~ Path.join([worktree, ".herdr-tasks", task.id])
+
+    assert %{branch: branch, workdir: ^worktree} = await_task(&(&1.worktree == worktree))
+    assert branch == "herdr/#{task.id}"
+    settle(task.id)
   end
 
   test "simulated tasks are never picked up", %{task: task} do

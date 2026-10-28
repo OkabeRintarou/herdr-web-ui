@@ -39,6 +39,8 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
     field(:agents, :map, default: %{})
     field(:team_id, :string)
     field(:queued, :boolean, default: false)
+    field(:branch, :string)
+    field(:worktree, :string)
 
     timestamps()
   end
@@ -46,7 +48,7 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
   @fields ~w(id title description priority workdir project_id workflow_source stage step paused
              cancelled pane_id agent_status stage_since last_bounce workflow proposal
              previous_workflow visits edge_counts attention timeline artifacts executor
-             workspace_id agents team_id queued)a
+             workspace_id agents team_id queued branch worktree)a
 
   @required ~w(id title priority workflow_source stage stage_since)a
 

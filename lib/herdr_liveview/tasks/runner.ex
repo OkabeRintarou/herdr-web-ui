@@ -44,7 +44,9 @@ defmodule HerdrLiveView.Tasks.Runner do
       # role => %{"name" => agent name, "pane_id" => pane}; string keys survive JSON as-is
       agents: %{},
       team_id: blank_to_nil(attrs["team_id"]),
-      queued: false
+      queued: false,
+      branch: nil,
+      worktree: nil
     }
   end
 
