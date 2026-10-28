@@ -4,7 +4,7 @@ defmodule HerdrLiveView.EngineTest do
   import HerdrLiveView.Fixtures
 
   alias HerdrLiveView.{Engine, FakeHerdr, Tasks, Teams}
-  alias HerdrLiveView.Engine.Step
+  alias HerdrLiveView.Engine.{Agents, Step}
   alias HerdrLiveView.Tasks.Runner
 
   setup do
@@ -50,7 +50,7 @@ defmodule HerdrLiveView.EngineTest do
 
     assert_receive {:herdr, {:create_workspace, _cwd, "task " <> _, coder_pane}}
     assert_receive {:herdr, {:start_agent, coder, ^coder_pane}}
-    assert coder == "#{task.id}-coder"
+    assert coder == "#{task.id}-coder-1"
     assert_receive {:herdr, {:prompt, ^coder, prompt}}
     assert prompt =~ Step.result_path(task)
     assert prompt =~ "- done："
@@ -153,7 +153,7 @@ defmodule HerdrLiveView.EngineTest do
     task: task
   } do
     {:ok, _ws, pane} = FakeHerdr.create_workspace(nil, "/elsewhere", "pre-existing")
-    :ok = FakeHerdr.start_agent(nil, "#{task.id}-coder", "copilot", pane, [])
+    :ok = FakeHerdr.start_agent(nil, "#{task.id}-coder-1", "copilot", pane, [])
     assert_receive {:herdr, {:create_workspace, "/elsewhere", _, ^pane}}
     assert_receive {:herdr, {:start_agent, _, ^pane}}
 
@@ -166,7 +166,7 @@ defmodule HerdrLiveView.EngineTest do
   end
 
   test "in a git project the agents work in the task's own worktree", %{task: task, dir: dir} do
-    HerdrLiveView.WorktreesTest.init_repo!(dir)
+    init_repo!(dir)
     task = start(task)
 
     worktree = Path.join([dir, ".herdr-worktrees", task.id])
@@ -223,7 +223,7 @@ defmodule HerdrLiveView.EngineTest do
       task = start(task)
 
       assert_receive {:herdr, {:agent_command, lead, _, _}}
-      assert lead == "#{task.id}-lead"
+      assert lead == "#{task.id}-lead-1"
       assert_receive {:herdr, {:prompt, ^lead, prompt}}
       assert prompt =~ "cc2（角色 coder，claude）"
       assert prompt =~ "标准流程："
@@ -250,7 +250,7 @@ defmodule HerdrLiveView.EngineTest do
       # approved: the step goes to the member the lead picked, with the lead's instructions
       {:ok, _} = Tasks.save_task(Runner.approve_workflow(task, DateTime.utc_now()))
       assert_receive {:herdr, {:agent_command, coder, "claude", _}}
-      assert coder == "#{task.id}-cc2"
+      assert coder == "#{task.id}-cc2-1"
       assert_receive {:herdr, {:prompt, ^coder, step_prompt}}
       assert step_prompt =~ "说明写到 #{Step.task_dir(task)}/notes.md"
       settle(task.id)
@@ -280,6 +280,128 @@ defmodule HerdrLiveView.EngineTest do
     end
   end
 
+  describe "agent lifecycle" do
+    # an instance already running for the task, as if from earlier steps
+    defp running_agent(task, attrs) do
+      {:ok, _ws, pane} = FakeHerdr.create_workspace(nil, "/w", "pre")
+      name = "#{task.id}-coder-1"
+      :ok = FakeHerdr.start_agent(nil, name, "copilot", pane, [])
+      assert_receive {:herdr, {:agent_command, ^name, _, _}}
+      assert_receive {:herdr, {:start_agent, ^name, ^pane}}
+
+      agent =
+        Map.merge(%{"name" => name, "pane_id" => pane, "member" => "coder", "n" => 1}, attrs)
+
+      {%{task | agents: %{"coder" => agent}}, name, pane}
+    end
+
+    test "an instance is replaced after #{Agents.max_uses()} uses, and its successor gets a handoff",
+         %{task: task} do
+      {task, old, pane} = running_agent(task, %{"uses" => 3, "last_used" => 0})
+      start(task)
+
+      assert_receive {:herdr, {:close_pane, ^pane}}
+      assert_receive {:herdr, {:agent_command, new, _, _}}
+      assert new == "#{task.id}-coder-2"
+      assert_receive {:herdr, {:prompt, ^new, prompt}}
+      assert prompt =~ "你接替了之前在本 task 中担任这个角色的 agent"
+      refute_received {:herdr, {:prompt, ^old, _}}
+      settle(task.id)
+    end
+
+    test "a human can ask for a fresh instance", %{task: task} do
+      {task, _old, pane} = running_agent(task, %{"uses" => 1, "retire" => true})
+      start(task)
+
+      assert_receive {:herdr, {:close_pane, ^pane}}
+      assert_receive {:herdr, {:prompt, new, _}}
+      assert new == "#{task.id}-coder-2"
+      settle(task.id)
+    end
+
+    test "an instance back after a long pause is told to catch up", %{task: task} do
+      an_hour_ago = DateTime.to_unix(DateTime.utc_now()) - 3600
+      {task, old, _pane} = running_agent(task, %{"uses" => 1, "last_used" => an_hour_ago})
+      start(task)
+
+      assert_receive {:herdr, {:prompt, ^old, prompt}}
+      assert prompt =~ "距离你上次在本 task 工作已过去 60 分钟"
+      refute_received {:herdr, {:close_pane, _}}
+      settle(task.id)
+    end
+
+    test "an ephemeral member's instance is closed once its step is done", %{task: task} do
+      team = Teams.default_team(task.project_id)
+      coder = Enum.find(team.members, &(&1.role == "coder"))
+      {:ok, _} = Teams.update_member(coder, %{"lifetime" => "ephemeral"})
+      start(%{task | team_id: team.id})
+
+      assert_receive {:herdr, {:prompt, coder_name, _}}
+      task = await_task(&(&1.agents["coder"]["step"] == "implement-1"))
+      pane = task.agents["coder"]["pane_id"]
+      write_result(task, %{verdict: "done"})
+      FakeHerdr.set_status(pane, "idle")
+
+      assert_receive {:herdr, {:close_pane, ^pane}}
+
+      assert %{agents: %{"coder" => %{"n" => 1} = coder_entry}} =
+               await_task(&(&1.step == "code_review"))
+
+      refute Map.has_key?(coder_entry, "name")
+      assert coder_name == "#{task.id}-coder-1"
+      settle(task.id)
+    end
+
+    test "finishing a task closes its agents", %{task: task} do
+      start(task)
+      assert_receive {:herdr, {:prompt, _, _}}
+      task = await_task(&(&1.agents["coder"]["step"] == "implement-1"))
+      pane = task.agents["coder"]["pane_id"]
+
+      {:ok, _} = Tasks.save_task(Runner.cancel(task, DateTime.utc_now()))
+
+      assert_receive {:herdr, {:close_pane, ^pane}}
+
+      assert %{agents: %{"coder" => coder}} =
+               await_task(&(&1.stage == :done and &1.agents["coder"]["name"] == nil))
+
+      assert coder == %{"n" => 1}
+    end
+
+    test "a full host makes room by closing the least recently used idle instance", %{
+      task: task
+    } do
+      %{host: host} = HerdrLiveView.Projects.get_project(task.project_id)
+      host |> Ecto.Changeset.change(max_agents: 1) |> HerdrLiveView.Repo.update!()
+
+      start(task)
+      assert_receive {:herdr, {:prompt, _, _}}
+      task = await_task(&(&1.agents["coder"]["step"] == "implement-1"))
+      coder_pane = task.agents["coder"]["pane_id"]
+      write_result(task, %{verdict: "done"})
+      FakeHerdr.set_status(coder_pane, "idle")
+
+      # the reviewer needs a slot: the idle coder gives up its pane
+      assert_receive {:herdr, {:close_pane, ^coder_pane}}
+      assert_receive {:herdr, {:prompt, reviewer, _}}
+      assert reviewer == "#{task.id}-reviewer-1"
+      settle(task.id)
+    end
+
+    test "a full host whose agents are all busy waits for a human", %{task: task} do
+      %{host: host} = HerdrLiveView.Projects.get_project(task.project_id)
+      host |> Ecto.Changeset.change(max_agents: 1) |> HerdrLiveView.Repo.update!()
+      {:ok, _ws, pane} = FakeHerdr.create_workspace(nil, "/w", "other")
+      :ok = FakeHerdr.start_agent(nil, "t-other-coder-1", "copilot", pane, [])
+
+      start(task)
+
+      assert %{attention: %{message: message}} = await_task(&(&1.stage == :attention))
+      assert message =~ "主机上的 agent 已达上限 1 个"
+      refute_received {:herdr, {:close_pane, _}}
+    end
+  end
+
   test "simulated tasks are never picked up", %{task: task} do
     start(%{task | executor: "simulated"})
     refute_receive {:herdr, _}, 200
@@ -304,7 +426,7 @@ defmodule HerdrLiveView.EngineTest do
     start(%{task | team_id: team.id})
 
     assert_receive {:herdr, {:agent_command, name, "claude", args}}
-    assert name == "#{task.id}-cc"
+    assert name == "#{task.id}-cc-1"
     assert args == ["--allowedTools", "Bash(git:*)", "--model", "opus"]
     assert_receive {:herdr, {:prompt, ^name, prompt}}
     assert prompt =~ "你的职责：coder 的职责"

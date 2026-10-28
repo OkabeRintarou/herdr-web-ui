@@ -29,6 +29,13 @@ defmodule HerdrLiveView.FakeHerdr do
   def panes(_host), do: Agent.get(__MODULE__, & &1.panes)
 
   @impl true
+  def close_pane(_host, pane_id) do
+    Agent.update(__MODULE__, &Map.update!(&1, :panes, fn panes -> Map.delete(panes, pane_id) end))
+    notify({:close_pane, pane_id})
+    :ok
+  end
+
+  @impl true
   def find_agent(_host, name) do
     Agent.get(__MODULE__, fn s ->
       Enum.find_value(s.panes, :error, fn {pane, p} -> if p["name"] == name, do: {:ok, pane} end)

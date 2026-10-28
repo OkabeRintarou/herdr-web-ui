@@ -5,6 +5,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
   alias HerdrLiveView.Herdr.Panes
   alias HerdrLiveView.{Tasks, Teams, Worktrees}
+  alias HerdrLiveView.Engine.Agents
   alias HerdrLiveView.Tasks.{Demo, Runner, Workflow}
   alias HerdrLiveViewWeb.LiveTerminal
 
@@ -204,6 +205,19 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
       end
 
     {:noreply, socket}
+  end
+
+  def handle_event("replace_agent", %{"id" => id, "role" => role}, socket) do
+    with_task(socket, id, fn task ->
+      case task.agents[role] do
+        %{"name" => _} = agent ->
+          agents = Map.put(task.agents, role, Map.put(agent, "retire", true))
+          {%{task | agents: agents}, "#{role} 将在下一步换成新的 agent"}
+
+        _ ->
+          {task, nil}
+      end
+    end)
   end
 
   def handle_event("cleanup_worktree", %{"id" => id}, socket) do
@@ -499,8 +513,24 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               id="task-agents"
               class="mt-1 flex flex-wrap gap-x-3 font-mono text-[11px] text-zinc-500"
             >
-              <span :for={{role, agent} <- @task.agents}>
-                {role}: {agent["name"]} ({agent["pane_id"]})
+              <span :for={{role, agent} <- @task.agents} id={"agent-" <> role}>
+                <%= if agent["name"] do %>
+                  {role}: {agent["name"]} ({agent["pane_id"]}) · {agent["uses"] || 0}/{Agents.max_uses()} 轮
+                  <span :if={agent["retire"]} class="text-amber-300">· 下一步换新</span>
+                  <button
+                    :if={!agent["retire"] and @task.stage != :done}
+                    id={"replace-agent-#{role}"}
+                    type="button"
+                    phx-click="replace_agent"
+                    phx-value-id={@task.id}
+                    phx-value-role={role}
+                    class="text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline"
+                  >
+                    换新
+                  </button>
+                <% else %>
+                  {role}: 已回收（第 {agent["n"]} 个）
+                <% end %>
               </span>
             </p>
           </div>

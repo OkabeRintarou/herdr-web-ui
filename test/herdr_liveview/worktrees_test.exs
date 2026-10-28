@@ -1,26 +1,12 @@
 defmodule HerdrLiveView.WorktreesTest do
   use ExUnit.Case, async: true
 
+  import HerdrLiveView.Fixtures, only: [git!: 2, init_repo!: 1]
+
   alias HerdrLiveView.Worktrees
 
   setup do
     %{tmp_dir: HerdrLiveView.Fixtures.scratch_dir!()}
-  end
-
-  def git!(dir, args) do
-    {out, 0} =
-      System.cmd("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t" | args],
-        stderr_to_stdout: true
-      )
-
-    out
-  end
-
-  def init_repo!(dir) do
-    git!(dir, ["init", "-q", "-b", "main"])
-    File.write!(Path.join(dir, "README"), "hi\n")
-    git!(dir, ["add", "."])
-    git!(dir, ["commit", "-q", "-m", "init"])
   end
 
   defp project(dir), do: %{path: dir, default_branch: "main"}

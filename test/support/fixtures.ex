@@ -23,6 +23,22 @@ defmodule HerdrLiveView.Fixtures do
     dir
   end
 
+  def git!(dir, args) do
+    {out, 0} =
+      System.cmd("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t" | args],
+        stderr_to_stdout: true
+      )
+
+    out
+  end
+
+  def init_repo!(dir) do
+    git!(dir, ["init", "-q", "-b", "main"])
+    File.write!(Path.join(dir, "README"), "hi\n")
+    git!(dir, ["add", "."])
+    git!(dir, ["commit", "-q", "-m", "init"])
+  end
+
   def project_fixture(attrs \\ %{}) do
     host = attrs[:host] || host_fixture()
     n = System.unique_integer([:positive])

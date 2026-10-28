@@ -186,6 +186,22 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     assert team_id == team.id
   end
 
+  test "a human can ask for a fresh agent for a role", %{conn: conn, project: project} do
+    {:ok, task} =
+      Tasks.create_task(%{"title" => "换人", "project_id" => project.id, "executor" => "herdr"})
+
+    agent = %{"name" => "#{task.id}-coder-1", "pane_id" => "w1:p1", "n" => 1, "uses" => 2}
+    {:ok, _} = Tasks.save_task(%{task | agents: %{"coder" => agent}})
+
+    {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/#{task.id}")
+    assert has_element?(view, "#agent-coder", "2/3 轮")
+
+    view |> element("#replace-agent-coder") |> render_click()
+
+    assert has_element?(view, "#agent-coder", "下一步换新")
+    assert %{"retire" => true} = Tasks.get_task(task.id).agents["coder"]
+  end
+
   test "starting a real task queues it for its team", %{conn: conn, project: project} do
     team = Teams.default_team(project.id)
 

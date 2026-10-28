@@ -6,7 +6,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   use GenServer, restart: :transient
   require Logger
 
-  alias HerdrLiveView.Engine.{Design, Herdr, Step}
+  alias HerdrLiveView.Engine.{Agents, Design, Herdr, Step}
   alias HerdrLiveView.Herdr.Panes
   alias HerdrLiveView.{Projects, Tasks, Teams, Worktrees}
   alias HerdrLiveView.Tasks.Runner
@@ -108,7 +108,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
     cond do
       task.stage == :done ->
-        {:stop, :normal, state}
+        {:stop, :normal, release_all(state)}
 
       not active?(task) ->
         # a human resumed the task after we escalated: allow one more nudge
@@ -149,15 +149,21 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
     with {:ok, task, agent} <- ensure_agent(host, state.team, task, role) do
       task = %{task | pane_id: agent["pane_id"]}
+      now = DateTime.utc_now()
 
-      prompt =
+      body =
         if task.step == "design",
           do: Design.prompt(task, state.team),
           else: Step.prompt(task, member(state.team, task, role))
 
-      case Herdr.impl().prompt(host, agent["name"], prompt) do
+      intro =
+        if (agent["uses"] || 0) == 0,
+          do: Agents.handoff(task, agent),
+          else: Agents.wake_up(task, agent, now)
+
+      case Herdr.impl().prompt(host, agent["name"], intro <> body) do
         :ok ->
-          agents = Map.put(task.agents, role, Map.put(agent, "step", Step.key(task)))
+          agents = Map.put(task.agents, role, Agents.used(agent, task, now))
           {:ok, task} = Tasks.save_task(%{task | agents: agents, agent_status: "working"})
 
           %{
@@ -194,44 +200,139 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   defp ensure_agent(host, team, task, role) do
     member = member(team, task, role)
+    member_name = (member && member.name) || role
+    spec = agent_command(member)
+
+    task =
+      if Agents.replace?(task.agents[role], member_name),
+        do: recycle(host, task, role),
+        else: task
+
+    current = task.agents[role]
 
     name =
-      get_in(task.agents, [role, "name"]) || agent_name(task, (member && member.name) || role)
-
-    spec = agent_command(member)
+      if Agents.live?(current),
+        do: current["name"],
+        else: Agents.instance_name(task, member_name, Agents.next_n(current))
 
     case Herdr.impl().find_agent(host, name) do
       {:ok, pane} ->
-        adopt(task, role, name, pane)
+        adopt(task, role, name, pane, member_name)
 
       :error ->
-        panes = Herdr.impl().panes(host)
+        # a recorded instance that is gone (closed by hand, evicted) gets a successor
+        {task, name} =
+          if Agents.live?(current) do
+            task = %{task | agents: Map.put(task.agents, role, Agents.recycled(current))}
+            {task, Agents.instance_name(task, member_name, Agents.next_n(task.agents[role]))}
+          else
+            {task, name}
+          end
 
-        case get_in(task.agents, [role, "pane_id"]) do
-          pane when is_map_key(panes, pane) ->
-            start_agent(host, spec, task, role, pane, name)
+        with {:ok, task} <- make_room(host, task, role) do
+          panes = Herdr.impl().panes(host)
+          # the old instance's pane is reused when its agent exited back to the shell
+          old = current && current["pane_id"]
 
-          _ ->
+          if is_map_key(panes, old) and is_nil(panes[old]["agent"]) do
+            start_agent(host, spec, task, role, old, name, member_name)
+          else
             with {:ok, task, pane} <- open_pane(host, task, panes) do
-              agents = Map.put(task.agents, role, %{"name" => name, "pane_id" => pane})
+              n = Agents.next_n(task.agents[role])
+              entry = %{"name" => name, "pane_id" => pane, "member" => member_name, "n" => n}
+              agents = Map.put(task.agents, role, entry)
               {:ok, task} = Tasks.save_task(%{task | agents: agents, pane_id: pane})
-              start_agent(host, spec, task, role, pane, name)
+              start_agent(host, spec, task, role, pane, name, member_name)
             end
+          end
         end
     end
   end
 
-  defp adopt(task, role, name, pane) do
-    agent = Map.merge(task.agents[role] || %{}, %{"name" => name, "pane_id" => pane})
+  defp adopt(task, role, name, pane, member_name) do
+    previous = task.agents[role] || %{}
+
+    n =
+      if Agents.live?(previous) and previous["name"] == name,
+        do: previous["n"] || 1,
+        else: Agents.next_n(previous)
+
+    agent =
+      if previous["name"] == name,
+        do: Map.merge(previous, %{"pane_id" => pane}),
+        else: %{"name" => name, "pane_id" => pane, "member" => member_name, "n" => n}
+
     {:ok, %{task | agents: Map.put(task.agents, role, agent)}, agent}
+  end
+
+  # Looked up by name, so a stale pane id never closes someone else's pane.
+  defp recycle(host, task, role) do
+    agent = task.agents[role]
+
+    with true <- Agents.live?(agent),
+         {:ok, pane} <- Herdr.impl().find_agent(host, agent["name"]),
+         do: Herdr.impl().close_pane(host, pane)
+
+    %{task | agents: Map.put(task.agents, role, Agents.recycled(agent))}
+  end
+
+  defp release_all(%{task: task, host: host} = state) do
+    if Enum.any?(task.agents, fn {_role, agent} -> Agents.live?(agent) end) do
+      task = Enum.reduce(Map.keys(task.agents), task, &recycle(host, &2, &1))
+      {:ok, task} = Tasks.save_task(task)
+      %{state | task: task}
+    else
+      state
+    end
+  end
+
+  # Keeps the host under its agent limit by closing the least recently used idle instance.
+  defp make_room(host, task, role) do
+    panes = Herdr.impl().panes(host)
+    ours = for {pane, %{"name" => "t-" <> _}} <- panes, do: pane
+
+    if length(ours) < host.max_agents do
+      {:ok, task}
+    else
+      on_host = for p <- Projects.list_projects(), p.host_id == host.id, do: p.id
+
+      candidates =
+        for t <- [task | Enum.reject(Tasks.list_tasks(), &(&1.id == task.id))],
+            t.executor == "herdr" and t.project_id in on_host,
+            {r, agent} <- t.agents,
+            Agents.live?(agent) and get_in(panes, [agent["pane_id"], "name"]) == agent["name"],
+            not (t.id == task.id and r == role),
+            not busy?(t, r),
+            do: {t, r, agent}
+
+      case Enum.min_by(candidates, fn {_t, _r, a} -> a["last_used"] || 0 end, fn -> nil end) do
+        nil ->
+          {:error, {:host_full, host.max_agents}}
+
+        {t, r, agent} ->
+          Logger.info("evicting #{agent["name"]} to make room on #{host.name}")
+          Herdr.impl().close_pane(host, agent["pane_id"])
+
+          # other tasks notice the instance is gone when they next need it
+          if t.id == task.id,
+            do: {:ok, %{task | agents: Map.put(task.agents, r, Agents.recycled(agent))}},
+            else: {:ok, task}
+      end
+    end
+  end
+
+  defp busy?(task, role) do
+    task.stage in [:plan, :implement] and is_nil(task.attention) and
+      match?(%{role: ^role}, Runner.current_step(task))
   end
 
   defp open_pane(host, task, panes) do
     cwd = task.workdir
 
     sibling =
-      Enum.find_value(task.agents, fn {_role, %{"pane_id" => pane}} ->
-        if Map.has_key?(panes, pane), do: pane
+      Enum.find_value(task.agents, fn
+        {_role, %{"pane_id" => pane}} -> if Map.has_key?(panes, pane), do: pane
+        _recycled -> nil
       end)
 
     if sibling do
@@ -243,21 +344,21 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     end
   end
 
-  defp start_agent(host, {kind, args} = spec, task, role, pane, name, attempts \\ 10) do
+  defp start_agent(host, {kind, args} = spec, task, role, pane, name, member, attempts \\ 10) do
     case Herdr.impl().start_agent(host, name, kind, pane, args) do
       :ok ->
-        adopt(task, role, name, pane)
+        adopt(task, role, name, pane, member)
 
       # a freshly opened pane needs a moment before its shell prompt is ready
       {:error, {:herdr, %{"code" => "agent_pane_busy"}}} when attempts > 1 ->
         Process.sleep(1_000)
-        start_agent(host, spec, task, role, pane, name, attempts - 1)
+        start_agent(host, spec, task, role, pane, name, member, attempts - 1)
 
       # the agent launched but stopped at its own startup dialog; prompting will surface that
       {:error, {:herdr, %{"code" => code}}} = error
       when code in ["agent_not_ready", "agent_name_taken"] ->
         case Herdr.impl().find_agent(host, name) do
-          {:ok, actual} -> adopt(task, role, name, actual)
+          {:ok, actual} -> adopt(task, role, name, actual, member)
           :error -> error
         end
 
@@ -299,9 +400,14 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     if active?(task) and Step.key(task) == state.dispatched do
       case read_result(state) do
         {:ok, verdict, summary} ->
-          {:ok, task} =
-            Tasks.save_task(Runner.verdict(task, verdict, summary, DateTime.utc_now()))
+          role = Runner.current_step(task).role
 
+          task =
+            task
+            |> Runner.verdict(verdict, summary, DateTime.utc_now())
+            |> after_verdict(state, role, verdict)
+
+          {:ok, task} = Tasks.save_task(task)
           %{state | task: task}
 
         {:ok, workflow} ->
@@ -321,6 +427,20 @@ defmodule HerdrLiveView.Engine.TaskWorker do
       end
     else
       state
+    end
+  end
+
+  # A replan starts everyone fresh; an ephemeral member's instance goes once its step is done.
+  defp after_verdict(task, state, role, verdict) do
+    cond do
+      verdict == "needs_replan" ->
+        %{task | agents: Agents.retire_all(task.agents)}
+
+      match?(%{lifetime: "ephemeral"}, member(state.team, task, role)) ->
+        recycle(state.host, task, role)
+
+      true ->
+        task
     end
   end
 
@@ -375,14 +495,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   defp agent_command(member), do: {member.agent_kind, OptionParser.split(member.agent_args)}
 
-  # herdr agent names: [a-z][a-z0-9_-]{0,31}
-  defp agent_name(task, role) do
-    "#{task.id}-#{role}"
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9_-]/, "-")
-    |> String.slice(0, 32)
-  end
-
+  defp format({:host_full, max}), do: "主机上的 agent 已达上限 #{max} 个，且都在忙"
   defp format({:herdr, %{"code" => code, "message" => message}}), do: "#{code}: #{message}"
   defp format(reason), do: inspect(reason)
 

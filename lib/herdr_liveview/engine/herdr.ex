@@ -17,6 +17,7 @@ defmodule HerdrLiveView.Engine.Herdr do
               String.t()
             ]) :: :ok | {:error, term()}
   @callback prompt(host, target :: String.t(), text :: String.t()) :: :ok | {:error, term()}
+  @callback close_pane(host, pane :: String.t()) :: :ok | {:error, term()}
 
   def impl, do: Application.get_env(:herdr_liveview, :engine_herdr, __MODULE__)
 
@@ -66,6 +67,11 @@ defmodule HerdrLiveView.Engine.Herdr do
   @impl true
   def prompt(host, target, text) do
     with {:ok, _} <- request(host, "agent.prompt", %{target: target, text: text}), do: :ok
+  end
+
+  @impl true
+  def close_pane(host, pane_id) do
+    with {:ok, _} <- request(host, "pane.close", %{pane_id: pane_id}), do: :ok
   end
 
   defp request(host, method, params, opts \\ []),

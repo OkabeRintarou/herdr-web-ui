@@ -5,7 +5,7 @@ defmodule HerdrLiveView.Engine do
   """
   use Supervisor
 
-  alias HerdrLiveView.Engine.TaskWorker
+  alias HerdrLiveView.Engine.{Agents, TaskWorker}
   alias HerdrLiveView.Tasks
 
   def start_link(opts), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
@@ -21,8 +21,17 @@ defmodule HerdrLiveView.Engine do
     Supervisor.init(children, strategy: :rest_for_one)
   end
 
-  def ensure_worker(%{executor: "herdr", stage: stage, id: id})
-      when stage not in [:todo, :done] do
+  def ensure_worker(%{executor: "herdr", stage: stage, id: id} = task)
+      when stage != :todo do
+    if stage != :done or Enum.any?(task.agents, fn {_r, a} -> Agents.live?(a) end),
+      do: start_worker(id),
+      else: :ignore
+  end
+
+  def ensure_worker(_task), do: :ignore
+
+  # A finished task's worker only closes the agents it still holds, then stops.
+  defp start_worker(id) do
     case Registry.lookup(HerdrLiveView.Engine.Registry, id) do
       [{pid, _}] ->
         {:ok, pid}
@@ -34,8 +43,6 @@ defmodule HerdrLiveView.Engine do
         end
     end
   end
-
-  def ensure_worker(_task), do: :ignore
 
   def resume_all, do: Enum.each(Tasks.list_tasks(), &ensure_worker/1)
 end
