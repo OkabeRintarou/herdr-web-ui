@@ -11,6 +11,9 @@ defmodule HerdrLiveView.Engine.Step do
 
   def key(task), do: "#{task.step}-#{Map.get(task.visits, task.step, 1)}"
 
+  def result_path(%{step: "design"} = task),
+    do: Path.join(task_dir(task), "#{key(task)}.plan.json")
+
   def result_path(task), do: Path.join(task_dir(task), "#{key(task)}.result.json")
 
   def allowed_verdicts(task), do: Enum.map(Workflow.outcomes(task.workflow, task.step), & &1.on)
@@ -74,7 +77,7 @@ defmodule HerdrLiveView.Engine.Step do
 
   defp instructions(step, _dir, _visit), do: "完成「#{step.label}」。"
 
-  defp feedback(task) do
+  def feedback(task) do
     case Enum.reverse(task.timeline) do
       [_current, %{status: :failed, label: label, output: output} | _] when is_binary(output) ->
         "\n上一步「#{label}」的结论：#{output}\n"

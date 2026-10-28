@@ -179,9 +179,31 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   def handle_event("redesign", %{"task_id" => id, "comment" => %{"text" => text}}, socket) do
     with_task(socket, id, fn task ->
       version = task.proposal.workflow.version + 1
-      schedule_lead(task, version, blank_to_nil(text))
-      {Runner.redesign(task, now()), "已让 lead 重新设计"}
+      feedback = blank_to_nil(text)
+      if task.executor == "simulated", do: schedule_lead(task, version, feedback)
+      {Runner.redesign(task, now(), feedback), "已让 lead 重新设计"}
     end)
+  end
+
+  def handle_event("save_template", %{"id" => id}, socket) do
+    task = socket.assigns.tasks[id]
+    workflow = %{task.workflow | id: "from-#{task.id}"}
+
+    socket =
+      case Teams.save_workflow(task.team_id, workflow) do
+        {:ok, _} ->
+          socket
+          |> assign_teams()
+          |> put_flash(
+            :info,
+            "已存为 #{socket.assigns.team_names[task.team_id]} 的模板「#{workflow.name}」"
+          )
+
+        {:error, _} ->
+          put_flash(socket, :error, "这个流程已经存过了")
+      end
+
+    {:noreply, socket}
   end
 
   def handle_event("cleanup_worktree", %{"id" => id}, socket) do
@@ -494,6 +516,15 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               开始
             </.action_button>
             <.action_button
+              :if={@task.workflow && @task.workflow.source == :lead && @task.team_id}
+              id="task-save-template"
+              event="save_template"
+              task_id={@task.id}
+              icon="hero-bookmark-micro"
+            >
+              存为模板
+            </.action_button>
+            <.action_button
               :if={@task.stage == :done and @task.worktree}
               id="task-cleanup-worktree"
               event="cleanup_worktree"
@@ -691,6 +722,13 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
           <%= case @task.attention.kind do %>
             <% :workflow_approval -> %>
               <p class="mt-2 text-sm text-zinc-300">{@task.proposal.workflow.rationale}</p>
+              <p
+                :if={(assignments = Map.get(@task.proposal.workflow, :assignments) || %{}) != %{}}
+                id="workflow-assignments"
+                class="mt-1 font-mono text-xs text-zinc-400"
+              >
+                分工：{Enum.map_join(assignments, "，", fn {role, name} -> "#{role} → #{name}" end)}
+              </p>
               <.workflow_diff
                 :if={@task.previous_workflow}
                 old={@task.previous_workflow}
@@ -1280,8 +1318,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
       if params["executor"] == "herdr" do
         [
           not File.dir?(project.path) &&
-            {:executor, {"项目目录 #{project.path} 不存在，无法真实执行", []}},
-          params["workflow"] == "lead" && {:workflow, {"真实执行暂只支持模板流程", []}}
+            {:executor, {"项目目录 #{project.path} 不存在，无法真实执行", []}}
         ]
       end
 

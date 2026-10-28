@@ -67,7 +67,11 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     assert has_element?(view, "#workflow-graph-node-plan[data-state=current]")
   end
 
-  test "a lead-designed task goes through proposal, redesign and approval", %{conn: conn} do
+  test "a lead-designed task goes through proposal, redesign and approval", %{
+    conn: conn,
+    project: project
+  } do
+    Tasks.assign_team!(project.id, Teams.default_team(project.id).id)
     {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/t-101")
 
     view |> element("#task-start") |> render_click()
@@ -86,6 +90,11 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     view |> element("#approve-workflow") |> render_click()
     assert has_element?(view, "#col-plan-cards #task-t-101", "lead 设计 v2")
     assert has_element?(view, "#workflow-graph-node-plan[data-state=current]")
+
+    view |> element("#task-save-template") |> render_click()
+    assert %{name: "lead 设计"} = Teams.workflow(Teams.default_team(project.id), "from-t-101")
+    view |> element("#task-save-template") |> render_click()
+    assert render(view) =~ "这个流程已经存过了"
   end
 
   test "a capped loop waits for a human, who can release one more round", %{conn: conn} do
@@ -128,21 +137,17 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     assert {workdir, project_id} == {project.path, project.id}
   end
 
-  test "herdr-executed tasks need a template workflow", %{conn: conn} do
+  test "herdr-executed tasks can be lead-designed", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/p/demo/new")
 
     view
     |> form("#new-task-form", task: %{title: "真跑", executor: "herdr", workflow: "lead"})
     |> render_submit()
 
-    assert has_element?(view, "#new-task-form", "真实执行暂只支持模板流程")
-
-    view
-    |> form("#new-task-form", task: %{title: "真跑", executor: "herdr", workflow: "quick"})
-    |> render_submit()
-
     assert has_element?(view, "#col-todo-cards", "真跑")
-    assert [%{executor: "herdr"}] = Enum.filter(Tasks.list_tasks(), &(&1.title == "真跑"))
+
+    assert [%{executor: "herdr", workflow: nil, workflow_source: "lead"}] =
+             Enum.filter(Tasks.list_tasks(), &(&1.title == "真跑"))
   end
 
   test "a task's team must have every role its workflow needs", %{conn: conn, project: project} do

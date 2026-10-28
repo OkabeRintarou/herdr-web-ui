@@ -179,6 +179,107 @@ defmodule HerdrLiveView.EngineTest do
     settle(task.id)
   end
 
+  describe "lead design" do
+    setup %{task: task} do
+      team = Teams.default_team(task.project_id)
+
+      {:ok, _} =
+        Teams.create_member(team.id, %{
+          "name" => "cc2",
+          "role" => "coder",
+          "agent_kind" => "claude"
+        })
+
+      %{task: %{task | workflow: nil, workflow_source: "lead", team_id: team.id}}
+    end
+
+    defp plan(roles \\ %{}) do
+      %{
+        name: "小改动",
+        rationale: "改动小，直接做再评审",
+        steps: [
+          %{
+            id: "build",
+            label: "实现",
+            role: roles[:build] || "coder",
+            phase: "implement",
+            instructions: "实现并提交，说明写到 {dir}/notes.md"
+          },
+          %{id: "check", label: "评审", role: "reviewer", phase: "implement"},
+          %{id: "accept", label: "验收", role: "human"}
+        ],
+        transitions: %{
+          build: [%{on: "done", to: "check"}],
+          check: [%{on: "pass", to: "accept"}, %{on: "changes_requested", to: "build", max: 2}],
+          accept: [%{on: "pass", to: "done"}]
+        },
+        assignments: %{coder: "cc2"}
+      }
+    end
+
+    test "the lead's plan goes back until it passes the checks, then waits for approval", %{
+      task: task
+    } do
+      task = start(task)
+
+      assert_receive {:herdr, {:agent_command, lead, _, _}}
+      assert lead == "#{task.id}-lead"
+      assert_receive {:herdr, {:prompt, ^lead, prompt}}
+      assert prompt =~ "cc2（角色 coder，claude）"
+      assert prompt =~ "标准流程："
+      plan_path = Step.result_path(%{task | step: "design", visits: %{"design" => 1}})
+      assert prompt =~ plan_path
+      assert plan_path =~ "design-1.plan.json"
+
+      pane = await_task(& &1.pane_id).pane_id
+      File.write!(plan_path, Jason.encode!(plan(%{build: "analyst"})))
+      FakeHerdr.set_status(pane, "idle")
+
+      assert_receive {:herdr, {:prompt, ^lead, nudge}}
+      assert nudge =~ "Team 里没有这些角色：analyst"
+
+      File.write!(plan_path, Jason.encode!(plan()))
+      FakeHerdr.set_status(pane, "working")
+      FakeHerdr.set_status(pane, "idle")
+
+      task = await_task(&(&1.stage == :attention))
+      assert %{attention: %{kind: :workflow_approval}, proposal: %{workflow: wf}} = task
+      assert %{source: :lead, version: 1, assignments: %{"coder" => "cc2"}} = wf
+      assert Enum.all?(Tasks.get_task(task.id).proposal.checks, &elem(&1, 1))
+
+      # approved: the step goes to the member the lead picked, with the lead's instructions
+      {:ok, _} = Tasks.save_task(Runner.approve_workflow(task, DateTime.utc_now()))
+      assert_receive {:herdr, {:agent_command, coder, "claude", _}}
+      assert coder == "#{task.id}-cc2"
+      assert_receive {:herdr, {:prompt, ^coder, step_prompt}}
+      assert step_prompt =~ "说明写到 #{Step.task_dir(task)}/notes.md"
+      settle(task.id)
+    end
+
+    test "a redesign asks the same lead again with the feedback and the previous version", %{
+      task: task
+    } do
+      task = start(task)
+      assert_receive {:herdr, {:agent_command, _, _, _}}
+      assert_receive {:herdr, {:prompt, lead, _}}
+      pane = await_task(& &1.pane_id).pane_id
+
+      File.write!(Step.result_path(Tasks.get_task(task.id)), Jason.encode!(plan()))
+      FakeHerdr.set_status(pane, "idle")
+      task = await_task(&(&1.stage == :attention))
+
+      {:ok, _} = Tasks.save_task(Runner.redesign(task, DateTime.utc_now(), "去掉评审"))
+
+      assert_receive {:herdr, {:prompt, ^lead, prompt}}
+      assert prompt =~ "第 2 版"
+      assert prompt =~ "要求重新设计：去掉评审"
+      assert prompt =~ "上一版流程（v1）"
+      assert prompt =~ "design-2.plan.json"
+      refute_received {:herdr, {:agent_command, _, _, _}}
+      settle(task.id)
+    end
+  end
+
   test "simulated tasks are never picked up", %{task: task} do
     start(%{task | executor: "simulated"})
     refute_receive {:herdr, _}, 200

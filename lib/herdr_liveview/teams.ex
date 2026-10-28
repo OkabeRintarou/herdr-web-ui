@@ -166,9 +166,17 @@ defmodule HerdrLiveView.Teams do
   def workflows(%Team{workflows: workflows}), do: Enum.map(workflows, &TeamWorkflow.workflow/1)
   def workflows(_team), do: []
 
-  @doc "The member that plays `role` in this team (first one added, until a Leader picks)."
-  def member_for(%Team{members: members}, role), do: Enum.find(members, &(&1.role == role))
-  def member_for(_team, _role), do: nil
+  @doc "The member that plays `role`: the one the lead assigned, else the first one added."
+  def member_for(team, role, assignments \\ nil)
+
+  def member_for(%Team{members: members}, role, assignments) do
+    name = (assignments || %{})[role]
+
+    Enum.find(members, &(&1.role == role and &1.name == name)) ||
+      Enum.find(members, &(&1.role == role))
+  end
+
+  def member_for(_team, _role, _assignments), do: nil
 
   def roles(%Team{members: members}), do: members |> Enum.map(& &1.role) |> Enum.uniq()
 

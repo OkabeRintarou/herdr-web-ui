@@ -6,7 +6,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   use GenServer, restart: :transient
   require Logger
 
-  alias HerdrLiveView.Engine.{Herdr, Step}
+  alias HerdrLiveView.Engine.{Design, Herdr, Step}
   alias HerdrLiveView.Herdr.Panes
   alias HerdrLiveView.{Projects, Tasks, Teams, Worktrees}
   alias HerdrLiveView.Tasks.Runner
@@ -150,7 +150,10 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     with {:ok, task, agent} <- ensure_agent(host, state.team, task, role) do
       task = %{task | pane_id: agent["pane_id"]}
 
-      prompt = Step.prompt(task, Teams.member_for(state.team, role))
+      prompt =
+        if task.step == "design",
+          do: Design.prompt(task, state.team),
+          else: Step.prompt(task, member(state.team, task, role))
 
       case Herdr.impl().prompt(host, agent["name"], prompt) do
         :ok ->
@@ -190,7 +193,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   end
 
   defp ensure_agent(host, team, task, role) do
-    member = Teams.member_for(team, role)
+    member = member(team, task, role)
 
     name =
       get_in(task.agents, [role, "name"]) || agent_name(task, (member && member.name) || role)
@@ -287,15 +290,22 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   defp observe(state, status) when status in ["idle", "done"], do: check_result(state, :idle)
   defp observe(state, _status), do: state
 
+  defp member(team, task, role),
+    do: Teams.member_for(team, role, task.workflow && Map.get(task.workflow, :assignments))
+
   defp check_result(%{dispatched: nil} = state, _reason), do: state
 
   defp check_result(%{task: task} = state, reason) do
     if active?(task) and Step.key(task) == state.dispatched do
-      case Step.read_result(task) do
+      case read_result(state) do
         {:ok, verdict, summary} ->
           {:ok, task} =
             Tasks.save_task(Runner.verdict(task, verdict, summary, DateTime.utc_now()))
 
+          %{state | task: task}
+
+        {:ok, workflow} ->
+          {:ok, task} = Tasks.save_task(Runner.propose(task, workflow, DateTime.utc_now()))
           %{state | task: task}
 
         :missing when reason == :idle ->
@@ -313,6 +323,11 @@ defmodule HerdrLiveView.Engine.TaskWorker do
       state
     end
   end
+
+  defp read_result(%{task: %{step: "design"} = task, team: team}),
+    do: Design.read_plan(task, team)
+
+  defp read_result(%{task: task}), do: Step.read_result(task)
 
   defp nudge(%{nudged: false, task: task} = state, problem) do
     text = problem <> "请按之前的要求写入 JSON 结果文件后结束本轮。"

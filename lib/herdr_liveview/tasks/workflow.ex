@@ -235,7 +235,7 @@ defmodule HerdrLiveView.Tasks.Workflow do
 
   def decode(wf) do
     wf
-    |> pick(~w(id name version rationale)a)
+    |> pick(~w(id name version rationale assignments)a)
     |> Map.merge(%{
       source: enum(wf["source"], [:template, :lead]),
       steps:
@@ -243,11 +243,12 @@ defmodule HerdrLiveView.Tasks.Workflow do
           step
           |> pick(~w(id label role output instructions)a)
           |> Map.put_new(:instructions, nil)
+          |> Map.put_new(:output, nil)
           |> Map.put(:phase, enum(step["phase"], [:plan, :implement, :attention]))
         end),
       transitions:
         Map.new(wf["transitions"], fn {from, ts} ->
-          {from, Enum.map(ts, &pick(&1, ~w(on to max)a))}
+          {from, Enum.map(ts, &(&1 |> pick(~w(on to max)a) |> Map.put_new(:max, nil)))}
         end)
     })
   end

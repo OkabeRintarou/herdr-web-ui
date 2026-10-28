@@ -64,6 +64,7 @@ defmodule HerdrLiveView.Tasks.Runner do
   def design(task, now) do
     %{task | step: "design", stage: :plan, attention: nil, agent_status: "working", paused: false}
     |> Map.put(:stage_since, now)
+    |> Map.update!(:visits, &Map.update(&1, "design", 1, fn n -> n + 1 end))
     |> append(%{label: "设计流程", role: "lead", status: :running})
   end
 
@@ -85,8 +86,16 @@ defmodule HerdrLiveView.Tasks.Runner do
     |> enter(Workflow.first_step(workflow), now)
   end
 
-  def redesign(%{proposal: %{workflow: workflow}} = task, now) do
-    %{task | previous_workflow: workflow, proposal: nil} |> design(now)
+  @doc "The feedback lands on the closed proposal entry, where the lead's next prompt picks it up."
+  def redesign(%{proposal: %{workflow: workflow}} = task, now, feedback \\ nil) do
+    output = "要求重新设计：#{feedback || "无具体意见"}"
+
+    %{task | previous_workflow: workflow, proposal: nil}
+    |> Map.update!(:timeline, fn
+      [] -> []
+      timeline -> List.update_at(timeline, -1, &%{&1 | status: :failed, output: output})
+    end)
+    |> design(now)
   end
 
   def use_template(task, template, now) do
@@ -192,7 +201,7 @@ defmodule HerdrLiveView.Tasks.Runner do
 
   def agent_step?(task) do
     case current_step(task) do
-      %{role: role} -> role not in ["human", "lead"]
+      %{role: role} -> role != "human"
       nil -> false
     end
   end
