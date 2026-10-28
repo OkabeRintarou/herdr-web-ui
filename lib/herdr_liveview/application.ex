@@ -19,6 +19,10 @@ defmodule HerdrLiveView.Application do
       ] ++
         seed_children() ++
         herdr_children() ++
+        if(Application.get_env(:herdr_liveview, :start_engine, true),
+          do: [HerdrLiveView.Engine],
+          else: []
+        ) ++
         [HerdrLiveViewWeb.Endpoint]
 
     # See https://elixir.hexdocs.pm/Supervisor.html

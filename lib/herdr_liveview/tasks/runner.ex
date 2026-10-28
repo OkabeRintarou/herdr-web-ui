@@ -32,7 +32,11 @@ defmodule HerdrLiveView.Tasks.Runner do
       stage_since: now,
       timeline: [],
       artifacts: [],
-      last_bounce: nil
+      last_bounce: nil,
+      executor: attrs["executor"] || "simulated",
+      workspace_id: nil,
+      # role => %{"name" => agent name, "pane_id" => pane}; string keys survive JSON as-is
+      agents: %{}
     }
   end
 
@@ -149,13 +153,14 @@ defmodule HerdrLiveView.Tasks.Runner do
     %{task | stage: :done, cancelled: true, attention: nil, agent_status: nil, stage_since: now}
   end
 
-  def block(task, message) do
-    %{
-      task
-      | stage: :attention,
-        agent_status: "blocked",
-        attention: %{kind: :blocked, message: message}
-    }
+  @doc "`key` tags who raised the block (e.g. \"agent_blocked\") so it can be lifted automatically."
+  def block(task, message, key \\ nil) do
+    attention =
+      if key,
+        do: %{kind: :blocked, message: message, key: key},
+        else: %{kind: :blocked, message: message}
+
+    %{task | stage: :attention, agent_status: "blocked", attention: attention}
     |> mark_last(:blocked)
   end
 

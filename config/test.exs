@@ -14,6 +14,8 @@ config :herdr_liveview, HerdrLiveView.Repo,
 
 config :herdr_liveview,
   start_herdr: false,
+  start_engine: false,
+  engine_herdr: HerdrLiveView.FakeHerdr,
   migrate_on_boot: false,
   access_token: nil,
   herdr_socket_path: Path.join(System.tmp_dir!(), "herdr-liveview-test-missing.sock")

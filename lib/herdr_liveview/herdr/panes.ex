@@ -10,6 +10,7 @@ defmodule HerdrLiveView.Herdr.Panes do
 
   @topic "herdr:panes"
   @retry_ms 2_000
+  @poll_ms 2_000
   @refresh_debounce_ms 100
   @subscriptions ~w(pane.created pane.updated pane.closed pane.moved pane.exited
                     pane.agent_detected tab.closed workspace.closed)
@@ -28,6 +29,7 @@ defmodule HerdrLiveView.Herdr.Panes do
   @impl true
   def init(_opts) do
     send(self(), :connect)
+    Process.send_after(self(), :poll, @poll_ms)
     {:ok, %{status: {:disconnected, :starting}, panes: %{}, sock: nil, buf: "", refresh: nil}}
   end
 
@@ -64,6 +66,19 @@ defmodule HerdrLiveView.Herdr.Panes do
     case fetch_panes() do
       {:ok, panes} -> {:noreply, publish(%{state | panes: panes})}
       {:error, reason} -> {:noreply, publish(%{state | status: {:disconnected, reason}})}
+    end
+  end
+
+  # Agent status changes don't emit pane_updated (and their own event needs a pane_id per
+  # subscription), so a cheap re-list catches them.
+  def handle_info(:poll, state) do
+    Process.send_after(self(), :poll, @poll_ms)
+
+    with :connected <- state.status,
+         {:ok, panes} when panes != state.panes <- fetch_panes() do
+      {:noreply, publish(%{state | panes: panes})}
+    else
+      _ -> {:noreply, state}
     end
   end
 

@@ -124,7 +124,10 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   def handle_event("start", %{"id" => id}, socket) do
     with_task(socket, id, fn task ->
       task = Runner.start(task, now())
-      if task.step == "design", do: schedule_lead(task, 1, nil)
+
+      if task.step == "design" and task.executor == "simulated",
+        do: schedule_lead(task, 1, nil)
+
       {task, if(task.step == "design", do: "lead 正在设计流程…", else: "已开始")}
     end)
   end
@@ -185,9 +188,6 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     ~H"""
     <Layouts.app flash={@flash} active={:tasks}>
       <:status>
-        <span class="hidden rounded-full bg-violet-400/10 px-2 py-0.5 text-[11px] font-medium text-violet-300 ring-1 ring-violet-400/20 sm:inline">
-          演示数据
-        </span>
         <span
           id="attention-count"
           class={[
@@ -295,6 +295,12 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
       <div class="flex items-center gap-2">
         <.priority priority={@task.priority} />
         <span class="font-mono text-[11px] text-zinc-600">{@task.id}</span>
+        <span
+          :if={@task.executor == "simulated"}
+          class="rounded bg-violet-400/10 px-1 text-[10px] text-violet-300"
+        >
+          模拟
+        </span>
         <span class="ml-auto truncate text-[11px] text-zinc-500">
           {workflow_badge(@task)}
         </span>
@@ -371,9 +377,24 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               <span class="font-mono text-zinc-500">{@task.id}</span>
               <span class="text-zinc-500">· {workflow_badge(@task)}</span>
               <span :if={@step} class="text-zinc-300">· {@step.label}</span>
+              <span
+                :if={@task.executor == "simulated"}
+                class="rounded bg-violet-400/10 px-1.5 text-violet-300"
+              >
+                模拟执行
+              </span>
             </div>
             <h2 class="mt-1 truncate text-lg font-semibold tracking-tight">{@task.title}</h2>
             <p class="mt-0.5 font-mono text-xs text-zinc-500">{@task.repo}</p>
+            <p
+              :if={@task.agents != %{}}
+              id="task-agents"
+              class="mt-1 flex flex-wrap gap-x-3 font-mono text-[11px] text-zinc-500"
+            >
+              <span :for={{role, agent} <- @task.agents}>
+                {role}: {agent["name"]} ({agent["pane_id"]})
+              </span>
+            </p>
           </div>
           <div class="flex shrink-0 items-center gap-1.5">
             <.action_button
@@ -861,6 +882,14 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
           <.field label="仓库路径">
             <.input field={@form[:repo]} type="text" placeholder="~/project" class={field_class()} />
           </.field>
+          <.field label="执行方式">
+            <.input
+              field={@form[:executor]}
+              type="select"
+              options={[{"herdr agent 真实执行", "herdr"}, {"模拟（演示）", "simulated"}]}
+              class={field_class()}
+            />
+          </.field>
           <div class="grid grid-cols-2 gap-3">
             <.field label="优先级">
               <.input
@@ -880,9 +909,16 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
             </.field>
           </div>
           <p class="text-xs text-zinc-500">
-            {if @form[:workflow].value == "lead",
-              do: "开始后由 lead 阅读需求并提交流程图，你批准后再开工。",
-              else: "直接按模板流程开工。"}
+            {cond do
+              @form[:executor].value == "herdr" ->
+                "开始后在 herdr 里为每个角色启动 agent，按流程逐步派活；产出写在仓库的 .herdr-tasks/ 下。"
+
+              @form[:workflow].value == "lead" ->
+                "开始后由 lead 阅读需求并提交流程图，你批准后再开工。"
+
+              true ->
+                "直接按模板流程开工。"
+            end}
           </p>
 
           <div class="flex justify-end gap-2 pt-2">
@@ -1063,8 +1099,8 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   defp simulate?(task) do
-    task.workflow != nil and task.proposal == nil and task.attention == nil and
-      not task.paused and Runner.agent_step?(task)
+    task.executor == "simulated" and task.workflow != nil and task.proposal == nil and
+      task.attention == nil and not task.paused and Runner.agent_step?(task)
   end
 
   # Demo tasks reference real pane ids; only show a terminal when that pane exists right now.
@@ -1100,10 +1136,26 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   defp validate(params) do
-    if String.trim(params["title"] || "") == "", do: [title: {"标题不能为空", []}], else: []
+    title = if String.trim(params["title"] || "") == "", do: [title: {"标题不能为空", []}]
+
+    herdr =
+      if params["executor"] == "herdr" do
+        repo = String.trim(params["repo"] || "")
+
+        [
+          repo == "" && {:repo, {"真实执行需要仓库路径", []}},
+          (repo != "" and not File.dir?(Path.expand(repo))) && {:repo, {"目录不存在", []}},
+          params["workflow"] == "lead" && {:workflow, {"真实执行暂只支持模板流程", []}}
+        ]
+      end
+
+    Enum.filter(List.wrap(title) ++ List.wrap(herdr), & &1)
   end
 
-  defp new_task_form(params \\ %{"priority" => "P2", "workflow" => "lead"}, errors \\ []) do
+  defp new_task_form(
+         params \\ %{"priority" => "P2", "workflow" => "standard", "executor" => "herdr"},
+         errors \\ []
+       ) do
     to_form(params, as: :task, errors: errors)
   end
 

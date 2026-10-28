@@ -33,13 +33,16 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
     field(:attention, :map)
     field(:timeline, {:array, :map}, default: [])
     field(:artifacts, {:array, :string}, default: [])
+    field(:executor, :string, default: "simulated")
+    field(:workspace_id, :string)
+    field(:agents, :map, default: %{})
 
     timestamps()
   end
 
   @fields ~w(id title description priority repo workflow_source stage step paused cancelled
              pane_id agent_status stage_since last_bounce workflow proposal previous_workflow
-             visits edge_counts attention timeline artifacts)a
+             visits edge_counts attention timeline artifacts executor workspace_id agents)a
 
   @required ~w(id title priority workflow_source stage stage_since)a
 

@@ -41,6 +41,10 @@ if config_env() != :test do
       System.get_env("HERDR_SOCKET_PATH") || Path.expand("~/.config/herdr/herdr.sock"),
     access_token: token
 
+  config :herdr_liveview,
+    agent_kind: System.get_env("HERDR_LIVEVIEW_AGENT_KIND", "copilot"),
+    agent_args: OptionParser.split(System.get_env("HERDR_LIVEVIEW_AGENT_ARGS", ""))
+
   config :herdr_liveview, HerdrLiveViewWeb.Endpoint, http: [ip: ip]
 
   if url = System.get_env("DATABASE_URL") do

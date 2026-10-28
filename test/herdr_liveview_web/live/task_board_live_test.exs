@@ -93,8 +93,39 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     view |> form("#new-task-form", task: %{title: " "}) |> render_submit()
     assert has_element?(view, "#new-task-form", "标题不能为空")
 
-    view |> form("#new-task-form", task: %{title: "写看板测试", workflow: "quick"}) |> render_submit()
+    view
+    |> form("#new-task-form", task: %{title: "写看板测试", workflow: "quick", executor: "simulated"})
+    |> render_submit()
+
     assert has_element?(view, "#col-todo-cards", "写看板测试")
+  end
+
+  @tag :tmp_dir
+  test "herdr-executed tasks need an existing repo and a template workflow", %{
+    conn: conn,
+    tmp_dir: dir
+  } do
+    {:ok, view, _html} = live(conn, ~p"/tasks/new")
+
+    view
+    |> form("#new-task-form",
+      task: %{title: "真跑", executor: "herdr", repo: "/nope", workflow: "lead"}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#new-task-form", "目录不存在")
+    assert has_element?(view, "#new-task-form", "真实执行暂只支持模板流程")
+
+    view
+    |> form("#new-task-form",
+      task: %{title: "真跑", executor: "herdr", repo: dir, workflow: "quick"}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#col-todo-cards", "真跑")
+
+    assert [%{executor: "herdr"}] =
+             Enum.filter(HerdrLiveView.Tasks.list_tasks(), &(&1.title == "真跑"))
   end
 
   test "unknown task ids fall back to the board", %{conn: conn} do
