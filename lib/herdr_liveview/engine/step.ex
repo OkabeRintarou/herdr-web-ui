@@ -7,7 +7,7 @@ defmodule HerdrLiveView.Engine.Step do
 
   @dir ".herdr-tasks"
 
-  def task_dir(task), do: Path.join([Path.expand(task.repo), @dir, task.id])
+  def task_dir(task), do: Path.join([task.workdir, @dir, task.id])
 
   def key(task), do: "#{task.step}-#{Map.get(task.visits, task.step, 1)}"
 

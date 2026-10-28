@@ -1,6 +1,8 @@
 defmodule HerdrLiveView.EngineTest do
   use HerdrLiveView.DataCase, async: false
 
+  import HerdrLiveView.Fixtures
+
   alias HerdrLiveView.{Engine, FakeHerdr, Tasks}
   alias HerdrLiveView.Engine.Step
   alias HerdrLiveView.Tasks.Runner
@@ -8,7 +10,8 @@ defmodule HerdrLiveView.EngineTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
-    start_supervised!({FakeHerdr, self()})
+    project = project_fixture(%{path: dir})
+    start_supervised!({FakeHerdr, {self(), project.host_id}})
     start_supervised!(Engine)
     # on_exit runs LIFO: stop workers before the sandbox owner rolls back underneath them
     on_exit(fn -> if pid = Process.whereis(Engine), do: Supervisor.stop(pid) end)
@@ -19,7 +22,8 @@ defmodule HerdrLiveView.EngineTest do
         "title" => "加个 flag",
         "workflow" => "quick",
         "executor" => "herdr",
-        "repo" => dir
+        "project_id" => project.id,
+        "workdir" => project.path
       })
 
     %{task: task}
@@ -149,8 +153,8 @@ defmodule HerdrLiveView.EngineTest do
   test "an agent that already exists under the role's name is adopted, not duplicated", %{
     task: task
   } do
-    {:ok, _ws, pane} = FakeHerdr.create_workspace("/elsewhere", "pre-existing")
-    :ok = FakeHerdr.start_agent("#{task.id}-coder", "copilot", pane, [])
+    {:ok, _ws, pane} = FakeHerdr.create_workspace(nil, "/elsewhere", "pre-existing")
+    :ok = FakeHerdr.start_agent(nil, "#{task.id}-coder", "copilot", pane, [])
     assert_receive {:herdr, {:create_workspace, "/elsewhere", _, ^pane}}
     assert_receive {:herdr, {:start_agent, _, ^pane}}
 

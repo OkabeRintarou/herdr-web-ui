@@ -33,6 +33,7 @@ defmodule HerdrLiveViewWeb.Layouts do
 
   slot :inner_block, required: true
   slot :status, doc: "right side of the top bar"
+  slot :crumb, doc: "current location shown after the tabs, e.g. the project name"
   attr :active, :atom, default: nil, doc: "highlighted top-level tab"
 
   def app(assigns) do
@@ -48,13 +49,20 @@ defmodule HerdrLiveViewWeb.Layouts do
             <span class="hidden text-sm text-zinc-500 md:inline">liveview</span>
           </.link>
           <nav class="flex items-center gap-1 text-sm">
-            <.nav_tab navigate={~p"/tasks"} active={@active == :tasks} icon="hero-view-columns-micro">
-              看板
+            <.nav_tab navigate={~p"/"} active={@active == :projects} icon="hero-squares-2x2-micro">
+              项目
             </.nav_tab>
-            <.nav_tab navigate={~p"/"} active={@active == :agents} icon="hero-cpu-chip-micro">
+            <.nav_tab navigate={~p"/hosts"} active={@active == :agents} icon="hero-cpu-chip-micro">
               Agents
             </.nav_tab>
           </nav>
+          <div
+            :if={@crumb != []}
+            class="hidden min-w-0 items-center gap-2 text-sm text-zinc-400 md:flex"
+          >
+            <.icon name="hero-chevron-right-micro" class="size-4 text-zinc-600" />
+            {render_slot(@crumb)}
+          </div>
         </div>
         <div class="flex items-center gap-3">{render_slot(@status)}</div>
       </header>

@@ -2,21 +2,28 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
   use HerdrLiveViewWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import HerdrLiveView.Fixtures
 
-  setup do
-    HerdrLiveView.Tasks.seed_demo!()
+  alias HerdrLiveView.Tasks
+
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: dir} do
+    project = project_fixture(%{slug: "demo", path: dir})
+    Tasks.seed_demo!(project)
+    %{project: project}
   end
 
   test "changes are persisted and survive a reload", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks/t-102")
+    {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/t-102")
     view |> element("#task-start") |> render_click()
 
-    {:ok, view, _html} = live(conn, ~p"/tasks")
+    {:ok, view, _html} = live(conn, ~p"/p/demo")
     assert has_element?(view, "#col-implement-cards #task-t-102")
   end
 
   test "renders phase columns with demo tasks", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks")
+    {:ok, view, _html} = live(conn, ~p"/p/demo")
 
     for stage <- ~w(todo plan implement attention done) do
       assert has_element?(view, "#col-#{stage}")
@@ -27,19 +34,31 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     assert has_element?(view, "#col-attention-cards #task-t-110")
   end
 
+  test "only this project's tasks are on its board", %{conn: conn} do
+    other = project_fixture(%{slug: "other"})
+    {:ok, _} = Tasks.create_task(%{"title" => "别的项目", "project_id" => other.id})
+
+    {:ok, view, _html} = live(conn, ~p"/p/demo")
+    refute render(view) =~ "别的项目"
+
+    {:ok, view, _html} = live(conn, ~p"/p/other")
+    assert has_element?(view, "#col-todo-cards", "别的项目")
+    refute has_element?(view, "#task-t-101")
+  end
+
   test "the drawer draws the workflow and highlights the current step", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks")
+    {:ok, view, _html} = live(conn, ~p"/p/demo")
 
     view |> element("#task-t-104") |> render_click()
 
-    assert_patch(view, ~p"/tasks/t-104")
+    assert_patch(view, ~p"/p/demo/tasks/t-104")
     assert has_element?(view, "#workflow-graph-node-code_review[data-state=current]")
     assert has_element?(view, "#workflow-graph-node-plan[data-state=visited]")
     assert has_element?(view, "#workflow-graph-edge-code_review-changes_requested", "1/3")
   end
 
   test "simulated verdicts move the task along the graph", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks/t-104")
+    {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/t-104")
 
     view |> element("#simulate-needs_replan") |> render_click()
 
@@ -48,7 +67,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
   end
 
   test "a lead-designed task goes through proposal, redesign and approval", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks/t-101")
+    {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/t-101")
 
     view |> element("#task-start") |> render_click()
     assert has_element?(view, "#col-plan-cards #task-t-101", "设计流程")
@@ -69,7 +88,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
   end
 
   test "a capped loop waits for a human, who can release one more round", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks/t-108")
+    {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/t-108")
 
     assert has_element?(view, "#decision-bar", "已达 2 次上限")
     view |> element("#extend") |> render_click()
@@ -79,7 +98,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
   end
 
   test "human acceptance can send work back", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks/t-112")
+    {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/t-112")
 
     view |> form("#send-back-form", comment: %{text: "漏了一个 flag"}) |> render_submit()
 
@@ -87,8 +106,11 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     assert has_element?(view, "#task-timeline li", "漏了一个 flag")
   end
 
-  test "creating a task validates the title", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tasks/new")
+  test "creating a task validates the title and works in the project folder", %{
+    conn: conn,
+    project: project
+  } do
+    {:ok, view, _html} = live(conn, ~p"/p/demo/new")
 
     view |> form("#new-task-form", task: %{title: " "}) |> render_submit()
     assert has_element?(view, "#new-task-form", "标题不能为空")
@@ -98,37 +120,35 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
     |> render_submit()
 
     assert has_element?(view, "#col-todo-cards", "写看板测试")
+
+    assert [%{workdir: workdir, project_id: project_id}] =
+             Enum.filter(Tasks.list_tasks(project.id), &(&1.title == "写看板测试"))
+
+    assert {workdir, project_id} == {project.path, project.id}
   end
 
-  @tag :tmp_dir
-  test "herdr-executed tasks need an existing repo and a template workflow", %{
-    conn: conn,
-    tmp_dir: dir
-  } do
-    {:ok, view, _html} = live(conn, ~p"/tasks/new")
+  test "herdr-executed tasks need a template workflow", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/p/demo/new")
 
     view
-    |> form("#new-task-form",
-      task: %{title: "真跑", executor: "herdr", repo: "/nope", workflow: "lead"}
-    )
+    |> form("#new-task-form", task: %{title: "真跑", executor: "herdr", workflow: "lead"})
     |> render_submit()
 
-    assert has_element?(view, "#new-task-form", "目录不存在")
     assert has_element?(view, "#new-task-form", "真实执行暂只支持模板流程")
 
     view
-    |> form("#new-task-form",
-      task: %{title: "真跑", executor: "herdr", repo: dir, workflow: "quick"}
-    )
+    |> form("#new-task-form", task: %{title: "真跑", executor: "herdr", workflow: "quick"})
     |> render_submit()
 
     assert has_element?(view, "#col-todo-cards", "真跑")
-
-    assert [%{executor: "herdr"}] =
-             Enum.filter(HerdrLiveView.Tasks.list_tasks(), &(&1.title == "真跑"))
+    assert [%{executor: "herdr"}] = Enum.filter(Tasks.list_tasks(), &(&1.title == "真跑"))
   end
 
   test "unknown task ids fall back to the board", %{conn: conn} do
-    assert {:error, {:live_redirect, %{to: "/tasks"}}} = live(conn, ~p"/tasks/nope")
+    assert {:error, {:live_redirect, %{to: "/p/demo"}}} = live(conn, ~p"/p/demo/tasks/nope")
+  end
+
+  test "unknown projects go back to the overview", %{conn: conn} do
+    assert {:error, {:live_redirect, %{to: "/"}}} = live(conn, ~p"/p/nope")
   end
 end

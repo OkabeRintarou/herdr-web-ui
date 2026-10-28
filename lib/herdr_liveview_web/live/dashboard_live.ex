@@ -3,23 +3,39 @@ defmodule HerdrLiveViewWeb.DashboardLive do
 
   alias HerdrLiveView.Herdr
   alias HerdrLiveView.Herdr.Panes
+  alias HerdrLiveView.Hosts
   alias HerdrLiveViewWeb.LiveTerminal
 
   @after_input_ms 150
 
   @impl true
+  def mount(%{"host_id" => host_id}, _session, socket) do
+    case Hosts.get_host(host_id) do
+      nil ->
+        {:ok, socket |> put_flash(:error, "Host 不存在") |> push_navigate(to: ~p"/")}
+
+      host ->
+        if connected?(socket),
+          do: Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic(host.id))
+
+        {status, panes} = Panes.snapshot(host.id)
+
+        {:ok,
+         socket
+         |> assign(host: host, hosts: Hosts.list_hosts())
+         |> assign(status: status, panes: panes, selected: nil)
+         |> LiveTerminal.init()
+         |> assign(form: empty_form(), keys: Herdr.allowed_keys())
+         |> stream_configure(:agents, dom_id: &"agent-#{dom_safe(&1["pane_id"])}")
+         |> stream_agents()}
+    end
+  end
+
   def mount(_params, _session, socket) do
-    if connected?(socket), do: Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic())
-
-    {status, panes} = Panes.snapshot()
-
-    {:ok,
-     socket
-     |> assign(status: status, panes: panes, selected: nil)
-     |> LiveTerminal.init()
-     |> assign(form: empty_form(), keys: Herdr.allowed_keys())
-     |> stream_configure(:agents, dom_id: &"agent-#{dom_safe(&1["pane_id"])}")
-     |> stream_agents()}
+    case Hosts.list_hosts() do
+      [host | _] -> {:ok, push_navigate(socket, to: ~p"/hosts/#{host.id}")}
+      [] -> {:ok, socket |> put_flash(:error, "还没有 Host") |> push_navigate(to: ~p"/")}
+    end
   end
 
   @impl true
@@ -54,7 +70,7 @@ defmodule HerdrLiveViewWeb.DashboardLive do
   def handle_event("prompt", %{"prompt" => %{"text" => text}}, socket) do
     with pane_id when is_binary(pane_id) <- socket.assigns.selected,
          text when text != "" <- String.trim(text) do
-      case Herdr.prompt(pane_id, text) do
+      case Herdr.prompt(socket.assigns.host, pane_id, text) do
         {:ok, _} ->
           {:noreply,
            socket |> assign(form: empty_form()) |> LiveTerminal.watch(pane_id, @after_input_ms)}
@@ -68,7 +84,8 @@ defmodule HerdrLiveViewWeb.DashboardLive do
   end
 
   def handle_event("key", %{"key" => key}, socket) do
-    case socket.assigns.selected && Herdr.send_key(socket.assigns.selected, key) do
+    case socket.assigns.selected &&
+           Herdr.send_key(socket.assigns.host, socket.assigns.selected, key) do
       {:ok, _} ->
         {:noreply, LiveTerminal.watch(socket, socket.assigns.selected, @after_input_ms)}
 
@@ -90,8 +107,29 @@ defmodule HerdrLiveViewWeb.DashboardLive do
 
       <div class="flex h-full">
         <aside class="flex w-80 shrink-0 flex-col border-r border-white/5 bg-zinc-900/40">
+          <nav
+            :if={length(@hosts) > 1}
+            id="host-switcher"
+            class="flex gap-1 overflow-x-auto border-b border-white/5 px-2 py-2"
+          >
+            <.link
+              :for={host <- @hosts}
+              navigate={~p"/hosts/#{host.id}"}
+              class={[
+                "rounded-md px-2 py-1 text-xs whitespace-nowrap transition",
+                if(host.id == @host.id,
+                  do: "bg-white/[0.07] text-zinc-100",
+                  else: "text-zinc-400 hover:bg-white/[0.04]"
+                )
+              ]}
+            >
+              {host.name}
+            </.link>
+          </nav>
           <div class="flex items-center justify-between px-4 pt-4 pb-2">
-            <h2 class="text-xs font-medium tracking-wider text-zinc-500 uppercase">Agents</h2>
+            <h2 class="text-xs font-medium tracking-wider text-zinc-500 uppercase">
+              Agents · <span class="normal-case">{@host.name}</span>
+            </h2>
             <span id="agent-count" class="rounded-full bg-white/5 px-2 py-0.5 text-xs text-zinc-400">
               {@agent_count}
             </span>
@@ -106,7 +144,7 @@ defmodule HerdrLiveViewWeb.DashboardLive do
             </li>
             <li :for={{dom_id, pane} <- @streams.agents} id={dom_id}>
               <.link
-                patch={~p"/panes/#{pane["pane_id"]}"}
+                patch={~p"/hosts/#{@host.id}/panes/#{pane["pane_id"]}"}
                 class={[
                   "group block rounded-lg px-3 py-2.5 ring-1 transition duration-150",
                   if(pane["pane_id"] == @selected,

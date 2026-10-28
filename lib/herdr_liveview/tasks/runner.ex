@@ -15,7 +15,9 @@ defmodule HerdrLiveView.Tasks.Runner do
       title: attrs["title"],
       description: attrs["description"] || "",
       priority: attrs["priority"] || "P2",
-      repo: attrs["repo"] || "",
+      project_id: attrs["project_id"],
+      # where agents work: the project folder now, the task's worktree later
+      workdir: attrs["workdir"] || "",
       workflow_source: source,
       workflow: Workflow.template(source),
       proposal: nil,

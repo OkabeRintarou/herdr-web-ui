@@ -8,7 +8,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   alias HerdrLiveView.Engine.{Herdr, Step}
   alias HerdrLiveView.Herdr.Panes
-  alias HerdrLiveView.Tasks
+  alias HerdrLiveView.{Projects, Tasks}
   alias HerdrLiveView.Tasks.Runner
 
   @tick_ms 5_000
@@ -23,7 +23,6 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     # finish the current message (often a DB write) before honouring a shutdown
     Process.flag(:trap_exit, true)
     Tasks.subscribe()
-    Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic())
     send(self(), :sync)
     schedule_tick()
 
@@ -31,6 +30,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
      %{
        task_id: task_id,
        task: nil,
+       host: nil,
        dispatched: nil,
        saw_working: false,
        nudged: false,
@@ -43,11 +43,17 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   @impl true
   def handle_info(:sync, state) do
-    case Tasks.get_task(state.task_id) do
-      nil -> {:stop, :normal, state}
-      task -> handle_task(task, recover(task, state))
+    with %{} = task <- Tasks.get_task(state.task_id),
+         %{host: host} <- task.project_id && Projects.get_project(task.project_id) do
+      Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic(host.id))
+      handle_task(task, recover(task, %{state | host: host}))
+    else
+      _ -> {:stop, :normal, state}
     end
   end
+
+  # :sync hasn't loaded the host yet; it reads the latest task itself.
+  def handle_info({:task_saved, _task}, %{host: nil} = state), do: {:noreply, state}
 
   def handle_info({:task_saved, %{id: id} = task}, %{task_id: id} = state),
     do: handle_task(task, state)
@@ -59,9 +65,15 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   end
 
   # Also samples the status itself: pane broadcasts only fire on change and may predate us.
+  def handle_info(:tick, %{host: nil} = state) do
+    schedule_tick()
+    {:noreply, state}
+  end
+
   def handle_info(:tick, state) do
     schedule_tick()
-    status = get_in(Herdr.impl().panes(), [state.task && state.task.pane_id, "agent_status"])
+    panes = Herdr.impl().panes(state.host)
+    status = get_in(panes, [state.task && state.task.pane_id, "agent_status"])
     {:noreply, state |> see(status) |> check_result(:tick)}
   end
 
@@ -112,14 +124,14 @@ defmodule HerdrLiveView.Engine.TaskWorker do
       Runner.agent_step?(task)
   end
 
-  defp dispatch(%{task: task} = state) do
+  defp dispatch(%{task: task, host: host} = state) do
     role = Runner.current_step(task).role
     File.mkdir_p!(Step.task_dir(task))
 
-    with {:ok, task, agent} <- ensure_agent(task, role) do
+    with {:ok, task, agent} <- ensure_agent(host, task, role) do
       task = %{task | pane_id: agent["pane_id"]}
 
-      case Herdr.impl().prompt(agent["name"], Step.prompt(task)) do
+      case Herdr.impl().prompt(host, agent["name"], Step.prompt(task)) do
         :ok ->
           agents = Map.put(task.agents, role, Map.put(agent, "step", Step.key(task)))
           {:ok, task} = Tasks.save_task(%{task | agents: agents, agent_status: "working"})
@@ -156,25 +168,25 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     escalate(state, "无法启动 #{role} 或发送指令：#{format(reason)}")
   end
 
-  defp ensure_agent(task, role) do
+  defp ensure_agent(host, task, role) do
     name = get_in(task.agents, [role, "name"]) || agent_name(task, role)
 
-    case Herdr.impl().find_agent(name) do
+    case Herdr.impl().find_agent(host, name) do
       {:ok, pane} ->
         adopt(task, role, name, pane)
 
       :error ->
-        panes = Herdr.impl().panes()
+        panes = Herdr.impl().panes(host)
 
         case get_in(task.agents, [role, "pane_id"]) do
           pane when is_map_key(panes, pane) ->
-            start_agent(task, role, pane, name)
+            start_agent(host, task, role, pane, name)
 
           _ ->
-            with {:ok, task, pane} <- open_pane(task, panes) do
+            with {:ok, task, pane} <- open_pane(host, task, panes) do
               agents = Map.put(task.agents, role, %{"name" => name, "pane_id" => pane})
               {:ok, task} = Tasks.save_task(%{task | agents: agents, pane_id: pane})
-              start_agent(task, role, pane, name)
+              start_agent(host, task, role, pane, name)
             end
         end
     end
@@ -185,8 +197,8 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     {:ok, %{task | agents: Map.put(task.agents, role, agent)}, agent}
   end
 
-  defp open_pane(task, panes) do
-    cwd = Path.expand(task.repo)
+  defp open_pane(host, task, panes) do
+    cwd = task.workdir
 
     sibling =
       Enum.find_value(task.agents, fn {_role, %{"pane_id" => pane}} ->
@@ -194,30 +206,30 @@ defmodule HerdrLiveView.Engine.TaskWorker do
       end)
 
     if sibling do
-      with {:ok, pane} <- Herdr.impl().split_pane(sibling, cwd), do: {:ok, task, pane}
+      with {:ok, pane} <- Herdr.impl().split_pane(host, sibling, cwd), do: {:ok, task, pane}
     else
-      with {:ok, ws, pane} <- Herdr.impl().create_workspace(cwd, "task #{task.id}") do
+      with {:ok, ws, pane} <- Herdr.impl().create_workspace(host, cwd, "task #{task.id}") do
         {:ok, %{task | workspace_id: ws}, pane}
       end
     end
   end
 
-  defp start_agent(task, role, pane, name, attempts \\ 10) do
+  defp start_agent(host, task, role, pane, name, attempts \\ 10) do
     {kind, args} = agent_command()
 
-    case Herdr.impl().start_agent(name, kind, pane, args) do
+    case Herdr.impl().start_agent(host, name, kind, pane, args) do
       :ok ->
         adopt(task, role, name, pane)
 
       # a freshly opened pane needs a moment before its shell prompt is ready
       {:error, {:herdr, %{"code" => "agent_pane_busy"}}} when attempts > 1 ->
         Process.sleep(1_000)
-        start_agent(task, role, pane, name, attempts - 1)
+        start_agent(host, task, role, pane, name, attempts - 1)
 
       # the agent launched but stopped at its own startup dialog; prompting will surface that
       {:error, {:herdr, %{"code" => code}}} = error
       when code in ["agent_not_ready", "agent_name_taken"] ->
-        case Herdr.impl().find_agent(name) do
+        case Herdr.impl().find_agent(host, name) do
           {:ok, actual} -> adopt(task, role, name, actual)
           :error -> error
         end
@@ -280,8 +292,9 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   defp nudge(%{nudged: false, task: task} = state, problem) do
     text = problem <> "请按之前的要求写入 JSON 结果文件后结束本轮。"
+    target = task.agents[Runner.current_step(task).role]["name"]
 
-    case Herdr.impl().prompt(task.agents[Runner.current_step(task).role]["name"], text) do
+    case Herdr.impl().prompt(state.host, target, text) do
       :ok ->
         %{
           state

@@ -1,7 +1,7 @@
 defmodule HerdrLiveViewWeb.LiveTerminal do
   @moduledoc """
-  Polls `pane.read` for one pane and pushes changed frames to the `Terminal` JS hook.
-  The LiveView must forward `:terminal_poll` messages to `handle_poll/1`.
+  Polls `pane.read` for one pane of `socket.assigns.host` and pushes changed frames to the
+  `Terminal` JS hook. The LiveView must forward `:terminal_poll` messages to `handle_poll/1`.
   """
   import Phoenix.Component, only: [assign: 2]
   import Phoenix.LiveView, only: [connected?: 1, push_event: 3]
@@ -38,7 +38,7 @@ defmodule HerdrLiveViewWeb.LiveTerminal do
   end
 
   defp push_frame(%{assigns: %{term_pane: pane_id}} = socket) when is_binary(pane_id) do
-    case Herdr.read_pane(pane_id) do
+    case Herdr.read_pane(socket.assigns.host, pane_id) do
       {:ok, text} ->
         hash = :erlang.phash2(text)
 

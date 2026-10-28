@@ -2,6 +2,7 @@ defmodule HerdrLiveViewWeb.DashboardLiveTest do
   use HerdrLiveViewWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import HerdrLiveView.Fixtures
 
   alias HerdrLiveView.Herdr.Panes
 
@@ -24,48 +25,70 @@ defmodule HerdrLiveViewWeb.DashboardLiveTest do
     }
   }
 
-  defp broadcast(status, panes) do
-    Phoenix.PubSub.broadcast(HerdrLiveView.PubSub, Panes.topic(), {:herdr_panes, status, panes})
+  setup do
+    %{host: host_fixture()}
   end
 
-  test "shows the disconnected state with no agents", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
+  defp broadcast(host, status, panes) do
+    Phoenix.PubSub.broadcast(
+      HerdrLiveView.PubSub,
+      Panes.topic(host.id),
+      {:herdr_panes, status, panes}
+    )
+  end
+
+  test "/hosts goes to the first host", %{conn: conn, host: host} do
+    assert {:error, {:live_redirect, %{to: to}}} = live(conn, ~p"/hosts")
+    assert to == ~p"/hosts/#{host.id}"
+  end
+
+  test "shows the disconnected state with no agents", %{conn: conn, host: host} do
+    {:ok, view, _html} = live(conn, ~p"/hosts/#{host.id}")
 
     assert has_element?(view, "#herdr-connection", "disconnected")
     refute has_element?(view, "#agents li[id^=agent-]")
   end
 
-  test "lists only panes running an agent and follows updates", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
+  test "lists only panes running an agent and follows updates", %{conn: conn, host: host} do
+    {:ok, view, _html} = live(conn, ~p"/hosts/#{host.id}")
 
-    broadcast(:connected, @panes)
+    broadcast(host, :connected, @panes)
 
     assert has_element?(view, "#herdr-connection", "connected")
     assert has_element?(view, "#agent-w1-p1", "reviewer")
     assert has_element?(view, "#agent-w1-p1", "blocked")
     refute has_element?(view, "#agent-w1-p2")
 
-    broadcast(:connected, put_in(@panes, ["w1:p1", "agent_status"], "working"))
+    broadcast(host, :connected, put_in(@panes, ["w1:p1", "agent_status"], "working"))
     assert has_element?(view, "#agent-w1-p1", "working")
 
-    broadcast(:connected, Map.delete(@panes, "w1:p1"))
+    broadcast(host, :connected, Map.delete(@panes, "w1:p1"))
     refute has_element?(view, "#agent-w1-p1")
   end
 
-  test "selecting an agent shows the terminal and input controls", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/")
-    broadcast(:connected, @panes)
+  test "another host's panes don't show up", %{conn: conn, host: host} do
+    other = host_fixture(%{"name" => "other"})
+    {:ok, view, _html} = live(conn, ~p"/hosts/#{host.id}")
+
+    broadcast(other, :connected, @panes)
+    refute has_element?(view, "#agent-w1-p1")
+    assert has_element?(view, "#host-switcher", "other")
+  end
+
+  test "selecting an agent shows the terminal and input controls", %{conn: conn, host: host} do
+    {:ok, view, _html} = live(conn, ~p"/hosts/#{host.id}")
+    broadcast(host, :connected, @panes)
 
     view |> element("#agent-w1-p1 a") |> render_click()
 
-    assert_patch(view, ~p"/panes/#{"w1:p1"}")
+    assert_patch(view, ~p"/hosts/#{host.id}/panes/#{"w1:p1"}")
     assert has_element?(view, "#terminal[phx-hook=Terminal]")
     assert has_element?(view, "#prompt-form")
     assert has_element?(view, "#key-ctrl-c")
   end
 
-  test "herdr failures are reported instead of crashing", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/panes/w1:p1")
+  test "herdr failures are reported instead of crashing", %{conn: conn, host: host} do
+    {:ok, view, _html} = live(conn, ~p"/hosts/#{host.id}/panes/w1:p1")
 
     view |> form("#prompt-form", prompt: %{text: "hello"}) |> render_submit()
     assert render(view) =~ "Prompt failed"
@@ -74,8 +97,8 @@ defmodule HerdrLiveViewWeb.DashboardLiveTest do
     assert render(view) =~ "Key esc failed"
   end
 
-  test "rejects keys outside the allow-list", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/panes/w1:p1")
+  test "rejects keys outside the allow-list", %{conn: conn, host: host} do
+    {:ok, view, _html} = live(conn, ~p"/hosts/#{host.id}/panes/w1:p1")
 
     render_hook(view, "key", %{"key" => "ctrl+z"})
     assert render(view) =~ "invalid_key"

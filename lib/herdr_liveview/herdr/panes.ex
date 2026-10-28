@@ -1,36 +1,49 @@
 defmodule HerdrLiveView.Herdr.Panes do
   @moduledoc """
-  Keeps a live copy of the herdr pane list via `events.subscribe` and
-  broadcasts every change on the "herdr:panes" PubSub topic.
+  Keeps a live copy of one host's herdr pane list via `events.subscribe` and
+  broadcasts every change on the host's "herdr:panes:<host id>" PubSub topic.
   """
   use GenServer
   require Logger
 
   alias HerdrLiveView.Herdr.Client
 
-  @topic "herdr:panes"
   @retry_ms 2_000
   @poll_ms 2_000
   @refresh_debounce_ms 100
   @subscriptions ~w(pane.created pane.updated pane.closed pane.moved pane.exited
                     pane.agent_detected tab.closed workspace.closed)
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def start_link(host), do: GenServer.start_link(__MODULE__, host, name: via(host.id))
 
-  def topic, do: @topic
+  def child_spec(host), do: %{id: {__MODULE__, host.id}, start: {__MODULE__, :start_link, [host]}}
+
+  defp via(host_id), do: {:via, Registry, {HerdrLiveView.Herdr.Registry, host_id}}
+
+  def topic(host_id), do: "herdr:panes:#{host_id}"
 
   @doc "Returns `{status, panes}` where status is `:connected` or `{:disconnected, reason}`."
-  def snapshot do
-    if Process.whereis(__MODULE__),
-      do: GenServer.call(__MODULE__, :snapshot),
-      else: {{:disconnected, :not_started}, %{}}
+  def snapshot(host_id) do
+    case Registry.lookup(HerdrLiveView.Herdr.Registry, host_id) do
+      [{pid, _}] -> GenServer.call(pid, :snapshot)
+      [] -> {{:disconnected, :not_started}, %{}}
+    end
   end
 
   @impl true
-  def init(_opts) do
+  def init(host) do
     send(self(), :connect)
     Process.send_after(self(), :poll, @poll_ms)
-    {:ok, %{status: {:disconnected, :starting}, panes: %{}, sock: nil, buf: "", refresh: nil}}
+
+    {:ok,
+     %{
+       host: host,
+       status: {:disconnected, :starting},
+       panes: %{},
+       sock: nil,
+       buf: "",
+       refresh: nil
+     }}
   end
 
   @impl true
@@ -38,8 +51,8 @@ defmodule HerdrLiveView.Herdr.Panes do
 
   @impl true
   def handle_info(:connect, state) do
-    with {:ok, panes} <- fetch_panes(),
-         {:ok, sock} <- subscribe() do
+    with {:ok, panes} <- fetch_panes(state),
+         {:ok, sock} <- subscribe(state) do
       {:noreply, publish(%{state | status: :connected, panes: panes, sock: sock, buf: ""})}
     else
       {:error, reason} ->
@@ -63,7 +76,7 @@ defmodule HerdrLiveView.Herdr.Panes do
   def handle_info(:refresh, state) do
     state = %{state | refresh: nil}
 
-    case fetch_panes() do
+    case fetch_panes(state) do
       {:ok, panes} -> {:noreply, publish(%{state | panes: panes})}
       {:error, reason} -> {:noreply, publish(%{state | status: {:disconnected, reason}})}
     end
@@ -75,7 +88,7 @@ defmodule HerdrLiveView.Herdr.Panes do
     Process.send_after(self(), :poll, @poll_ms)
 
     with :connected <- state.status,
-         {:ok, panes} when panes != state.panes <- fetch_panes() do
+         {:ok, panes} when panes != state.panes <- fetch_panes(state) do
       {:noreply, publish(%{state | panes: panes})}
     else
       _ -> {:noreply, state}
@@ -92,14 +105,15 @@ defmodule HerdrLiveView.Herdr.Panes do
      publish(%{state | status: {:disconnected, reason}, panes: %{}, sock: nil, buf: ""})}
   end
 
-  defp fetch_panes do
-    with {:ok, %{"panes" => panes}} <- Client.request("pane.list", %{}) do
+  defp fetch_panes(%{host: host}) do
+    with {:ok, %{"panes" => panes}} <-
+           Client.request("pane.list", %{}, socket_path: host.socket_path) do
       {:ok, Map.new(panes, &{&1["pane_id"], &1})}
     end
   end
 
-  defp subscribe do
-    with {:ok, sock} <- Client.connect(Client.socket_path()) do
+  defp subscribe(%{host: host}) do
+    with {:ok, sock} <- Client.connect(host.socket_path) do
       req = %{
         id: Client.request_id(),
         method: "events.subscribe",
@@ -152,7 +166,7 @@ defmodule HerdrLiveView.Herdr.Panes do
   defp publish(state) do
     Phoenix.PubSub.broadcast(
       HerdrLiveView.PubSub,
-      @topic,
+      topic(state.host.id),
       {:herdr_panes, state.status, state.panes}
     )
 

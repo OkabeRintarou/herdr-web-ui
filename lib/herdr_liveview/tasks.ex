@@ -6,11 +6,37 @@ defmodule HerdrLiveView.Tasks do
   alias HerdrLiveView.Repo
   alias HerdrLiveView.Tasks.{Demo, Runner, TaskRecord}
 
+  import Ecto.Query
+
   @topic "tasks"
 
   def subscribe, do: Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, @topic)
 
   def list_tasks, do: TaskRecord |> Repo.all() |> Enum.map(&TaskRecord.to_task/1)
+
+  def list_tasks(project_id) do
+    from(t in TaskRecord, where: t.project_id == ^project_id)
+    |> Repo.all()
+    |> Enum.map(&TaskRecord.to_task/1)
+  end
+
+  @doc "Per-project counts by stage, e.g. `%{\"p-1\" => %{todo: 2, attention: 1}}`."
+  def stage_counts do
+    from(t in TaskRecord,
+      group_by: [t.project_id, t.stage],
+      select: {t.project_id, t.stage, count()}
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {project, stage, n}, acc ->
+      Map.update(acc, project, %{stage => n}, &Map.put(&1, stage, n))
+    end)
+  end
+
+  def list_attention do
+    from(t in TaskRecord, where: t.stage == :attention, order_by: t.stage_since)
+    |> Repo.all()
+    |> Enum.map(&TaskRecord.to_task/1)
+  end
 
   def get_task(id) do
     case Repo.get(TaskRecord, id) do
@@ -36,10 +62,21 @@ defmodule HerdrLiveView.Tasks do
   end
 
   @doc "Fills an empty store with the demo tasks so the board has something to show."
-  def seed_demo! do
+  def seed_demo!(project) do
     if Repo.aggregate(TaskRecord, :count) == 0 do
-      Enum.each(Demo.tasks(), &({:ok, _} = save_task(&1)))
+      Enum.each(Demo.tasks(project), &({:ok, _} = save_task(&1)))
     end
+
+    :ok
+  end
+
+  @doc "Moves tasks created before projects existed into `project`."
+  def adopt_orphans!(project) do
+    from(t in TaskRecord, where: is_nil(t.project_id))
+    |> Repo.update_all(set: [project_id: project.id])
+
+    from(t in TaskRecord, where: t.workdir == "")
+    |> Repo.update_all(set: [workdir: project.path])
 
     :ok
   end

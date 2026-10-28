@@ -21,26 +21,37 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   @workflow_options [{"让 lead 设计", "lead"}, {"标准流程", "standard"}, {"快速修复", "quick"}]
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(%{"slug" => slug}, _session, socket) do
+    case HerdrLiveView.Projects.get_by_slug(slug) do
+      nil ->
+        {:ok, socket |> put_flash(:error, "项目 #{slug} 不存在") |> push_navigate(to: ~p"/")}
+
+      project ->
+        {:ok, mount_project(socket, project)}
+    end
+  end
+
+  defp mount_project(socket, project) do
+    host = project.host
+
     if connected?(socket) do
-      Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic())
+      Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic(host.id))
       Tasks.subscribe()
     end
 
-    {status, panes} = Panes.snapshot()
+    {status, panes} = Panes.snapshot(host.id)
 
     socket =
       Enum.reduce(Demo.stages(), socket, fn stage, socket ->
         stream_configure(socket, stage, dom_id: &"task-#{&1.id}")
       end)
 
-    {:ok,
-     socket
-     |> assign(status: status, panes: panes, stages: Demo.stages())
-     |> assign(tasks: Map.new(Tasks.list_tasks(), &{&1.id, &1}), task: nil)
-     |> assign(form: new_task_form(), comment_form: comment_form())
-     |> LiveTerminal.init()
-     |> stream_columns()}
+    socket
+    |> assign(project: project, host: host, status: status, panes: panes, stages: Demo.stages())
+    |> assign(tasks: Map.new(Tasks.list_tasks(project.id), &{&1.id, &1}), task: nil)
+    |> assign(form: new_task_form(), comment_form: comment_form())
+    |> LiveTerminal.init()
+    |> stream_columns()
   end
 
   @impl true
@@ -51,7 +62,9 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   defp apply_action(socket, :show, %{"id" => id}) do
     case socket.assigns.tasks[id] do
       nil ->
-        socket |> put_flash(:error, "Task #{id} 不存在") |> push_patch(to: ~p"/tasks")
+        socket
+        |> put_flash(:error, "Task #{id} 不存在")
+        |> push_patch(to: ~p"/p/#{socket.assigns.project.slug}")
 
       task ->
         socket
@@ -84,7 +97,11 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
   def handle_info(:terminal_poll, socket), do: {:noreply, LiveTerminal.handle_poll(socket)}
 
-  def handle_info({:task_saved, task}, socket), do: {:noreply, apply_task(socket, task)}
+  def handle_info({:task_saved, %{project_id: project_id} = task}, socket)
+      when project_id == socket.assigns.project.id,
+      do: {:noreply, apply_task(socket, task)}
+
+  def handle_info({:task_saved, _other_project}, socket), do: {:noreply, socket}
 
   def handle_info({:lead_proposal, id, version, feedback}, socket) do
     case socket.assigns.tasks[id] do
@@ -100,21 +117,28 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   @impl true
-  def handle_event("close", _params, socket), do: {:noreply, push_patch(socket, to: ~p"/tasks")}
+  def handle_event("close", _params, socket),
+    do: {:noreply, push_patch(socket, to: ~p"/p/#{socket.assigns.project.slug}")}
 
   def handle_event("validate", %{"task" => params}, socket) do
-    {:noreply, assign(socket, form: new_task_form(params, validate(params)))}
+    {:noreply,
+     assign(socket, form: new_task_form(params, validate(params, socket.assigns.project)))}
   end
 
   def handle_event("create", %{"task" => params}, socket) do
-    case validate(params) do
+    project = socket.assigns.project
+
+    case validate(params, project) do
       [] ->
-        task = Runner.new(params)
+        task =
+          params
+          |> Map.merge(%{"project_id" => project.id, "workdir" => project.path})
+          |> Runner.new()
 
         {:noreply,
          socket
          |> put_task(task, "已创建")
-         |> push_patch(to: ~p"/tasks/#{task.id}")}
+         |> push_patch(to: ~p"/p/#{project.slug}/tasks/#{task.id}")}
 
       errors ->
         {:noreply, assign(socket, form: new_task_form(params, errors))}
@@ -186,7 +210,11 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     assigns = assign(assigns, columns: @columns, workflow_options: @workflow_options)
 
     ~H"""
-    <Layouts.app flash={@flash} active={:tasks}>
+    <Layouts.app flash={@flash} active={:projects}>
+      <:crumb>
+        <span class="truncate font-medium text-zinc-200">{@project.name}</span>
+        <span class="truncate font-mono text-xs text-zinc-500">{@host.name}:{@project.path}</span>
+      </:crumb>
       <:status>
         <span
           id="attention-count"
@@ -203,7 +231,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
         <.connection status={@status} />
         <.link
           id="new-task"
-          patch={~p"/tasks/new"}
+          patch={~p"/p/#{@project.slug}/new"}
           class="inline-flex items-center gap-1 rounded-lg bg-emerald-500 px-2 py-1.5 text-xs font-medium whitespace-nowrap text-zinc-950 transition hover:bg-emerald-400 active:scale-[0.98] sm:px-3"
         >
           <.icon name="hero-plus-micro" class="size-4" />
@@ -248,6 +276,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               :for={{dom_id, task} <- Map.fetch!(@streams, stage)}
               id={dom_id}
               task={task}
+              slug={@project.slug}
               agent_status={agent_status(@panes, task)}
             />
           </div>
@@ -258,6 +287,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
         :if={@live_action == :show and @task}
         task={@task}
         panes={@panes}
+        host_id={@host.id}
         live_pane={live_pane(@panes, @task)}
         comment_form={@comment_form}
       />
@@ -273,6 +303,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
   attr :id, :string, required: true
   attr :task, :map, required: true
+  attr :slug, :string, required: true
   attr :agent_status, :string, default: nil
 
   defp task_card(assigns) do
@@ -281,7 +312,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     ~H"""
     <.link
       id={@id}
-      patch={~p"/tasks/#{@task.id}"}
+      patch={~p"/p/#{@slug}/tasks/#{@task.id}"}
       class={[
         "group block rounded-xl bg-zinc-900 p-3 ring-1 transition duration-150 hover:-translate-y-px hover:bg-zinc-800/80 hover:shadow-lg hover:shadow-black/30",
         cond do
@@ -355,6 +386,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
   attr :task, :map, required: true
   attr :panes, :map, required: true
+  attr :host_id, :string, required: true
   attr :live_pane, :string, default: nil
   attr :comment_form, :any, required: true
 
@@ -385,7 +417,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               </span>
             </div>
             <h2 class="mt-1 truncate text-lg font-semibold tracking-tight">{@task.title}</h2>
-            <p class="mt-0.5 font-mono text-xs text-zinc-500">{@task.repo}</p>
+            <p class="mt-0.5 font-mono text-xs text-zinc-500">{@task.workdir}</p>
             <p
               :if={@task.agents != %{}}
               id="task-agents"
@@ -439,6 +471,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
         <.decision_bar
           :if={@task.attention}
           task={@task}
+          host_id={@host_id}
           live_pane={@live_pane}
           comment_form={@comment_form}
         />
@@ -576,6 +609,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   attr :task, :map, required: true
+  attr :host_id, :string, required: true
   attr :live_pane, :string, default: nil
   attr :comment_form, :any, required: true
 
@@ -692,7 +726,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
                 >
                   {step.label}
                 </.decision_button>
-                <.take_over :if={@live_pane} pane={@live_pane} />
+                <.take_over :if={@live_pane} host_id={@host_id} pane={@live_pane} />
               </div>
             <% :blocked -> %>
               <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -705,7 +739,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
                 >
                   批准继续
                 </.decision_button>
-                <.take_over :if={@live_pane} pane={@live_pane} />
+                <.take_over :if={@live_pane} host_id={@host_id} pane={@live_pane} />
               </div>
           <% end %>
         </div>
@@ -812,13 +846,14 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     """
   end
 
+  attr :host_id, :string, required: true
   attr :pane, :string, required: true
 
   defp take_over(assigns) do
     ~H"""
     <.link
       id="take-over"
-      navigate={~p"/panes/#{@pane}"}
+      navigate={~p"/hosts/#{@host_id}/panes/#{@pane}"}
       class="inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-zinc-400 transition hover:bg-white/5 hover:text-zinc-200"
     >
       <.icon name="hero-arrow-top-right-on-square-micro" class="size-4" /> 接管
@@ -878,9 +913,6 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               placeholder="背景、约束，以及怎样算完成"
               class={field_class()}
             />
-          </.field>
-          <.field label="仓库路径">
-            <.input field={@form[:repo]} type="text" placeholder="~/project" class={field_class()} />
           </.field>
           <.field label="执行方式">
             <.input
@@ -1135,16 +1167,14 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     end
   end
 
-  defp validate(params) do
+  defp validate(params, project) do
     title = if String.trim(params["title"] || "") == "", do: [title: {"标题不能为空", []}]
 
     herdr =
       if params["executor"] == "herdr" do
-        repo = String.trim(params["repo"] || "")
-
         [
-          repo == "" && {:repo, {"真实执行需要仓库路径", []}},
-          (repo != "" and not File.dir?(Path.expand(repo))) && {:repo, {"目录不存在", []}},
+          not File.dir?(project.path) &&
+            {:executor, {"项目目录 #{project.path} 不存在，无法真实执行", []}},
           params["workflow"] == "lead" && {:workflow, {"真实执行暂只支持模板流程", []}}
         ]
       end

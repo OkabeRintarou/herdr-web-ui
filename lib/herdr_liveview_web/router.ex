@@ -19,11 +19,14 @@ defmodule HerdrLiveViewWeb.Router do
     pipe_through :browser
 
     live_session :default, on_mount: {HerdrLiveViewWeb.Auth, :require_auth} do
-      live "/", DashboardLive, :index
-      live "/panes/:pane_id", DashboardLive, :show
-      live "/tasks", TaskBoardLive, :index
-      live "/tasks/new", TaskBoardLive, :new
-      live "/tasks/:id", TaskBoardLive, :show
+      live "/", ProjectsLive, :index
+      live "/projects/new", ProjectsLive, :new
+      live "/p/:slug", TaskBoardLive, :index
+      live "/p/:slug/new", TaskBoardLive, :new
+      live "/p/:slug/tasks/:id", TaskBoardLive, :show
+      live "/hosts", DashboardLive, :index
+      live "/hosts/:host_id", DashboardLive, :index
+      live "/hosts/:host_id/panes/:pane_id", DashboardLive, :show
     end
   end
 

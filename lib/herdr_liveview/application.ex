@@ -15,14 +15,12 @@ defmodule HerdrLiveView.Application do
         HerdrLiveView.Repo,
         {Ecto.Migrator,
          repos: Application.fetch_env!(:herdr_liveview, :ecto_repos),
-         skip: not Application.get_env(:herdr_liveview, :migrate_on_boot, true)}
+         skip: not Application.get_env(:herdr_liveview, :migrate_on_boot, true)},
+        {Registry, keys: :unique, name: HerdrLiveView.Herdr.Registry},
+        {DynamicSupervisor, name: HerdrLiveView.Herdr.Connections, strategy: :one_for_one}
       ] ++
-        seed_children() ++
-        herdr_children() ++
-        if(Application.get_env(:herdr_liveview, :start_engine, true),
-          do: [HerdrLiveView.Engine],
-          else: []
-        ) ++
+        enabled(:bootstrap, HerdrLiveView.Bootstrap) ++
+        enabled(:start_engine, HerdrLiveView.Engine) ++
         [HerdrLiveViewWeb.Endpoint]
 
     # See https://elixir.hexdocs.pm/Supervisor.html
@@ -31,16 +29,8 @@ defmodule HerdrLiveView.Application do
     Supervisor.start_link(children, opts)
   end
 
-  defp seed_children do
-    if Application.get_env(:herdr_liveview, :seed_demo, false),
-      do: [{Task, &HerdrLiveView.Tasks.seed_demo!/0}],
-      else: []
-  end
-
-  defp herdr_children do
-    if Application.get_env(:herdr_liveview, :start_herdr, true),
-      do: [HerdrLiveView.Herdr.Panes],
-      else: []
+  defp enabled(flag, child) do
+    if Application.get_env(:herdr_liveview, flag, true), do: [child], else: []
   end
 
   # Tell Phoenix to update the endpoint configuration

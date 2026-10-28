@@ -4,8 +4,9 @@ defmodule HerdrLiveView.FakeHerdr do
 
   use Agent
 
-  def start_link(test_pid) do
-    Agent.start_link(fn -> %{test: test_pid, panes: %{}, next: 1, blocked: false} end,
+  def start_link({test_pid, host_id}) do
+    Agent.start_link(
+      fn -> %{test: test_pid, host_id: host_id, panes: %{}, next: 1, blocked: false} end,
       name: __MODULE__
     )
   end
@@ -15,41 +16,41 @@ defmodule HerdrLiveView.FakeHerdr do
 
   def set_status(pane_id, status) do
     Agent.update(__MODULE__, &put_in(&1, [:panes, pane_id, "agent_status"], status))
-    panes = panes()
+    %{host_id: host_id, panes: panes} = Agent.get(__MODULE__, & &1)
 
     Phoenix.PubSub.broadcast(
       HerdrLiveView.PubSub,
-      "herdr:panes",
+      HerdrLiveView.Herdr.Panes.topic(host_id),
       {:herdr_panes, :connected, panes}
     )
   end
 
   @impl true
-  def panes, do: Agent.get(__MODULE__, & &1.panes)
+  def panes(_host), do: Agent.get(__MODULE__, & &1.panes)
 
   @impl true
-  def find_agent(name) do
+  def find_agent(_host, name) do
     Agent.get(__MODULE__, fn s ->
       Enum.find_value(s.panes, :error, fn {pane, p} -> if p["name"] == name, do: {:ok, pane} end)
     end)
   end
 
   @impl true
-  def create_workspace(cwd, label) do
+  def create_workspace(_host, cwd, label) do
     pane = new_pane()
     notify({:create_workspace, cwd, label, pane})
     {:ok, "w9", pane}
   end
 
   @impl true
-  def split_pane(target, cwd) do
+  def split_pane(_host, target, cwd) do
     pane = new_pane()
     notify({:split_pane, target, cwd, pane})
     {:ok, pane}
   end
 
   @impl true
-  def start_agent(name, kind, pane_id, _args) do
+  def start_agent(_host, name, kind, pane_id, _args) do
     Agent.update(__MODULE__, fn s ->
       s
       |> put_in([:panes, pane_id, "agent"], kind)
@@ -64,7 +65,7 @@ defmodule HerdrLiveView.FakeHerdr do
   end
 
   @impl true
-  def prompt(target, text) do
+  def prompt(_host, target, text) do
     if Agent.get(__MODULE__, & &1.blocked) do
       notify({:prompt_rejected, target})
       {:error, {:herdr, %{"code" => "agent_blocked", "message" => "blocked"}}}

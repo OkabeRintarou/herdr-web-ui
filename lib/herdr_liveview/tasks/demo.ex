@@ -7,21 +7,22 @@ defmodule HerdrLiveView.Tasks.Demo do
 
   def stages, do: @stages
 
-  def tasks(now \\ DateTime.utc_now()) do
+  def tasks(project, now \\ DateTime.utc_now()) do
+    Enum.map(build_all(now), &%{&1 | project_id: project.id, workdir: project.path})
+  end
+
+  defp build_all(now) do
     [
       build(now, "t-101", "修复登录页 token 过期后不跳转", "P1", "lead", nil, [],
         description: "token 过期时前端停留在空白页。验收：过期后自动跳到登录页并保留 return_to。",
-        repo: "~/web-app",
         age: 40
       ),
       build(now, "t-102", "给 CLI 增加 --json 输出", "P2", "quick", nil, [],
         description: "所有 list 子命令支持 --json，字段与 API 保持一致。",
-        repo: "~/tools/cli",
         age: 95
       ),
       build(now, "t-103", "HRR Phase 2：ResNet50 拷贝路径", "P0", "lead", "w3:p6", [:start],
         description: "设计 Phase 2 的拷贝类型拆分方案，包含风险与回滚策略。",
-        repo: "~/amdesvt",
         age: 6
       ),
       build(
@@ -33,7 +34,6 @@ defmodule HerdrLiveView.Tasks.Demo do
         nil,
         [:start, {:propose, 4}],
         description: "长输出分页读取，避免一次读取超大缓冲；需要兼容旧客户端。",
-        repo: "~/herdr-web-ui",
         age: 9
       ),
       build(
@@ -45,7 +45,6 @@ defmodule HerdrLiveView.Tasks.Demo do
         "w1:p2",
         [:start, {"done", 9}, {"changes_requested", 5, "缺少回滚方案"}, {"done", 6}],
         description: "把散落的错误码映射收敛到一个模块，补充单测。",
-        repo: "~/rocmrt",
         age: 25
       ),
       build(
@@ -64,7 +63,6 @@ defmodule HerdrLiveView.Tasks.Demo do
           {"done", 11}
         ],
         description: "按 openspec 修复 compute 队列在多流下的竞争。验收：回归用例全过。",
-        repo: "~/amdesvt",
         age: 70
       ),
       build(
@@ -76,12 +74,10 @@ defmodule HerdrLiveView.Tasks.Demo do
         nil,
         [:start, {"done", 6}, {"pass", 3}, {"done", 30}, {"needs_replan", 4, "现有锁模型无法支持跨设备事件"}],
         description: "实现中发现原方案依赖的锁模型不成立，被打回重新规划。",
-        repo: "~/amdesvt",
         age: 50
       ),
       build(now, "t-105", "补齐 CLI 帮助文本", "P2", "quick", nil, [:start, :pause],
         description: "所有子命令补齐 --help 示例。",
-        repo: "~/tools/cli",
         age: 64
       ),
       build(
@@ -93,7 +89,6 @@ defmodule HerdrLiveView.Tasks.Demo do
         "w1:p1",
         [:start, {:block, "coder 请求执行 sudo apparmor_parser，需要人工审批"}],
         description: "为 bwrap 写 AppArmor profile，使 codex sandbox 可用。",
-        repo: "~/infra",
         age: 3
       ),
       build(
@@ -113,7 +108,6 @@ defmodule HerdrLiveView.Tasks.Demo do
           {"changes_requested", 5, "set -o 路径未覆盖"}
         ],
         description: "所有调用点补齐 supported_power_cap 门控。",
-        repo: "~/amdsmi",
         age: 60
       ),
       build(
@@ -125,7 +119,6 @@ defmodule HerdrLiveView.Tasks.Demo do
         nil,
         [:start, {"done", 12}, {"pass", 4}],
         description: "删除已全量开启超过 30 天的 flag。",
-        repo: "~/web-app",
         age: 20
       ),
       build(
@@ -137,7 +130,6 @@ defmodule HerdrLiveView.Tasks.Demo do
         nil,
         [:start, {"done", 5}, {"pass", 3}, {"done", 22}, {"pass", 6}, {"pass", 2}],
         description: "以 nm -D 为基准统计导出与实现数量。",
-        repo: "~/rocmrt",
         age: 180
       )
     ]
@@ -155,8 +147,7 @@ defmodule HerdrLiveView.Tasks.Demo do
           "priority" => priority,
           "workflow" => workflow,
           "pane_id" => pane_id,
-          "description" => opts[:description],
-          "repo" => opts[:repo]
+          "description" => opts[:description]
         },
         start
       )

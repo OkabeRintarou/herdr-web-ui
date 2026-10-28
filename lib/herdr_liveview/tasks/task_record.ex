@@ -15,7 +15,8 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
     field(:title, :string)
     field(:description, :string, default: "")
     field(:priority, :string)
-    field(:repo, :string, default: "")
+    field(:workdir, :string, default: "")
+    field(:project_id, :string)
     field(:workflow_source, :string)
     field(:stage, Ecto.Enum, values: [:todo, :plan, :implement, :attention, :done])
     field(:step, :string)
@@ -40,9 +41,10 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
     timestamps()
   end
 
-  @fields ~w(id title description priority repo workflow_source stage step paused cancelled
-             pane_id agent_status stage_since last_bounce workflow proposal previous_workflow
-             visits edge_counts attention timeline artifacts executor workspace_id agents)a
+  @fields ~w(id title description priority workdir project_id workflow_source stage step paused
+             cancelled pane_id agent_status stage_since last_bounce workflow proposal
+             previous_workflow visits edge_counts attention timeline artifacts executor
+             workspace_id agents)a
 
   @required ~w(id title priority workflow_source stage stage_since)a
 
@@ -64,7 +66,7 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
     |> Map.take(@fields)
     |> Map.merge(%{
       description: r.description || "",
-      repo: r.repo || "",
+      workdir: r.workdir || "",
       workflow: decode_workflow(r.workflow),
       previous_workflow: decode_workflow(r.previous_workflow),
       proposal: decode_proposal(r.proposal),

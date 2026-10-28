@@ -8,10 +8,8 @@ defmodule HerdrLiveView.Herdr.Client do
   @connect_timeout 2_000
   @default_timeout 10_000
 
-  def socket_path, do: Application.fetch_env!(:herdr_liveview, :herdr_socket_path)
-
-  def request(method, params \\ %{}, opts \\ []) do
-    path = Keyword.get(opts, :socket_path) || socket_path()
+  def request(method, params, opts) do
+    path = Keyword.fetch!(opts, :socket_path)
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     with {:ok, sock} <- connect(path) do
