@@ -3,7 +3,7 @@ defmodule HerdrLiveView.Bootstrap do
   Runs once at boot, after migrations and before the engine: makes sure the configured local
   host and a default project exist, moves pre-project tasks into it, then connects to hosts.
   """
-  alias HerdrLiveView.{Hosts, Projects, Tasks}
+  alias HerdrLiveView.{Hosts, Projects, Tasks, Teams}
 
   def child_spec(_opts),
     do: %{id: __MODULE__, start: {__MODULE__, :run, []}, restart: :temporary}
@@ -16,6 +16,12 @@ defmodule HerdrLiveView.Bootstrap do
     project = Projects.ensure_default!(host)
     Tasks.adopt_orphans!(project)
     if Application.get_env(:herdr_liveview, :seed_demo, false), do: Tasks.seed_demo!(project)
+
+    for project <- Projects.list_projects() do
+      team = Teams.ensure_default_team!(project.id)
+      Tasks.assign_team!(project.id, team.id)
+    end
+
     Hosts.connect_all()
     :ignore
   end

@@ -50,13 +50,14 @@ defmodule HerdrLiveView.FakeHerdr do
   end
 
   @impl true
-  def start_agent(_host, name, kind, pane_id, _args) do
+  def start_agent(_host, name, kind, pane_id, args) do
     Agent.update(__MODULE__, fn s ->
       s
       |> put_in([:panes, pane_id, "agent"], kind)
       |> put_in([:panes, pane_id, "name"], name)
     end)
 
+    notify({:agent_command, name, kind, args})
     notify({:start_agent, name, pane_id})
 
     if Agent.get(__MODULE__, & &1.blocked),

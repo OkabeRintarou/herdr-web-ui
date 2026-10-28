@@ -21,7 +21,8 @@ defmodule HerdrLiveView.Engine do
     Supervisor.init(children, strategy: :rest_for_one)
   end
 
-  def ensure_worker(%{executor: "herdr", stage: stage, id: id}) when stage != :done do
+  def ensure_worker(%{executor: "herdr", stage: stage, id: id})
+      when stage not in [:todo, :done] do
     case Registry.lookup(HerdrLiveView.Engine.Registry, id) do
       [{pid, _}] ->
         {:ok, pid}

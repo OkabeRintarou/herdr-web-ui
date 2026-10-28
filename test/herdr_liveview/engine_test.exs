@@ -3,7 +3,7 @@ defmodule HerdrLiveView.EngineTest do
 
   import HerdrLiveView.Fixtures
 
-  alias HerdrLiveView.{Engine, FakeHerdr, Tasks}
+  alias HerdrLiveView.{Engine, FakeHerdr, Tasks, Teams}
   alias HerdrLiveView.Engine.Step
   alias HerdrLiveView.Tasks.Runner
 
@@ -169,5 +169,64 @@ defmodule HerdrLiveView.EngineTest do
   test "simulated tasks are never picked up", %{task: task} do
     start(%{task | executor: "simulated"})
     refute_receive {:herdr, _}, 200
+  end
+
+  test "the team's member decides which agent CLI runs, with its arguments and duty", %{
+    task: task
+  } do
+    {:ok, team} = Teams.create_team(task.project_id, %{"name" => "claude 队"})
+
+    for {name, role} <- [{"cc", "coder"}, {"rev", "reviewer"}] do
+      {:ok, _} =
+        Teams.create_member(team.id, %{
+          "name" => name,
+          "role" => role,
+          "duty" => "#{role} 的职责",
+          "agent_kind" => "claude",
+          "agent_args" => "--allowedTools 'Bash(git:*)' --model opus"
+        })
+    end
+
+    start(%{task | team_id: team.id})
+
+    assert_receive {:herdr, {:agent_command, name, "claude", args}}
+    assert name == "#{task.id}-cc"
+    assert args == ["--allowedTools", "Bash(git:*)", "--model", "opus"]
+    assert_receive {:herdr, {:prompt, ^name, prompt}}
+    assert prompt =~ "你的职责：coder 的职责"
+    assert prompt =~ "按 #{Step.task_dir(task)}/plan.md 实现"
+    settle(task.id)
+  end
+
+  test "queued tasks start as their team frees up", %{task: task} do
+    {:ok, team} =
+      task.project_id |> Teams.default_team() |> Teams.update_team(%{"max_concurrent_tasks" => 1})
+
+    queue = fn title ->
+      {:ok, t} =
+        Tasks.save_task(
+          Runner.enqueue(%{task | id: "t-#{title}", title: title, team_id: team.id})
+        )
+
+      t
+    end
+
+    first = queue.("q1")
+    second = queue.("q2")
+
+    assert %{id: id} = await_task(&(&1.id == first.id and not &1.queued))
+    assert id == first.id
+    assert_receive {:herdr, {:prompt, _, _}}
+    assert Tasks.get_task(second.id).queued
+
+    {:ok, _} = Tasks.save_task(Runner.cancel(Tasks.get_task(first.id), DateTime.utc_now()))
+    await_task(&(&1.id == second.id and not &1.queued))
+    assert_receive {:herdr, {:prompt, _, _}}
+    settle(second.id)
+  end
+
+  defp settle(task_id) do
+    _ = :sys.get_state(HerdrLiveView.Engine.TaskWorker.via(task_id))
+    _ = :sys.get_state(HerdrLiveView.Engine.Manager)
   end
 end

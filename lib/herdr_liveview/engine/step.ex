@@ -32,9 +32,10 @@ defmodule HerdrLiveView.Engine.Step do
     end
   end
 
-  def prompt(task) do
+  def prompt(task, member \\ nil) do
     step = Workflow.step(task.workflow, task.step)
     dir = task_dir(task)
+    visit = Map.get(task.visits, task.step, 1)
 
     verdicts =
       for t <- Workflow.outcomes(task.workflow, task.step) do
@@ -42,13 +43,13 @@ defmodule HerdrLiveView.Engine.Step do
       end
 
     """
-    你是 AI 小队中的 #{step.role}，负责 task #{task.id}「#{task.title}」中的「#{step.label}」这一步（第 #{Map.get(task.visits, task.step, 1)} 次）。
-
+    你是 AI 小队中的 #{step.role}，负责 task #{task.id}「#{task.title}」中的「#{step.label}」这一步（第 #{visit} 次）。
+    #{duty(member)}
     需求与验收标准：
     #{blank(task.description, "（无）")}
 
     本步要做的事：
-    #{instructions(step, dir, Map.get(task.visits, task.step, 1))}
+    #{instructions(step, dir, visit)}
     #{feedback(task)}
     task 共享目录：#{dir}
     之前各步的产出都在这个目录里；不要把这个目录提交到 git。
@@ -62,23 +63,14 @@ defmodule HerdrLiveView.Engine.Step do
     """
   end
 
-  defp instructions(%{id: "plan"}, dir, _visit),
-    do: "阅读相关代码，写出实施方案到 #{dir}/plan.md：目标、改动点、风险、验证方法。若之前有评审意见，请据此修订。"
+  defp duty(%{duty: duty}) when is_binary(duty) and duty != "", do: "你的职责：#{duty}\n"
+  defp duty(_member), do: ""
 
-  defp instructions(%{id: "plan_review"}, dir, _visit),
-    do: "评审 #{dir}/plan.md 是否可行、是否覆盖验收标准，意见写到 #{dir}/plan-review.md。"
-
-  defp instructions(%{id: "implement"}, dir, _visit),
-    do: "按 #{dir}/plan.md 实现（没有方案就按需求实现），并在当前仓库提交 commit。若发现方案不可行，用 needs_replan 并在 summary 说明原因。"
-
-  defp instructions(%{id: "code_review"}, dir, visit),
-    do: "评审本 task 的代码改动（git log / git diff），问题逐条写到 #{dir}/review-#{visit}.md。"
-
-  defp instructions(%{id: "fix"}, dir, _visit),
-    do: "根据 #{dir} 中最新的 review-*.md 修复问题并提交 commit。"
-
-  defp instructions(%{id: "test"}, dir, _visit),
-    do: "为本次改动补充并运行回归测试，结果写到 #{dir}/test-report.md。"
+  defp instructions(%{instructions: text}, dir, visit) when is_binary(text) and text != "" do
+    text
+    |> String.replace("{dir}", dir)
+    |> String.replace("{visit}", to_string(visit))
+  end
 
   defp instructions(step, _dir, _visit), do: "完成「#{step.label}」。"
 

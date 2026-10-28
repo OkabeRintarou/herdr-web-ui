@@ -23,6 +23,7 @@ defmodule HerdrLiveViewWeb.Router do
       live "/projects/new", ProjectsLive, :new
       live "/p/:slug", TaskBoardLive, :index
       live "/p/:slug/new", TaskBoardLive, :new
+      live "/p/:slug/settings", ProjectSettingsLive, :index
       live "/p/:slug/tasks/:id", TaskBoardLive, :show
       live "/hosts", DashboardLive, :index
       live "/hosts/:host_id", DashboardLive, :index

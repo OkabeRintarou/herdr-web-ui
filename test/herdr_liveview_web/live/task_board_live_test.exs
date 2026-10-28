@@ -4,7 +4,8 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
   import Phoenix.LiveViewTest
   import HerdrLiveView.Fixtures
 
-  alias HerdrLiveView.Tasks
+  alias HerdrLiveView.{Tasks, Teams}
+  alias HerdrLiveView.Tasks.Workflow
 
   @moduletag :tmp_dir
 
@@ -142,6 +143,68 @@ defmodule HerdrLiveViewWeb.TaskBoardLiveTest do
 
     assert has_element?(view, "#col-todo-cards", "真跑")
     assert [%{executor: "herdr"}] = Enum.filter(Tasks.list_tasks(), &(&1.title == "真跑"))
+  end
+
+  test "a task's team must have every role its workflow needs", %{conn: conn, project: project} do
+    {:ok, team} = Teams.create_team(project.id, %{"name" => "单人队"})
+
+    {:ok, _} =
+      Teams.create_member(team.id, %{
+        "name" => "solo",
+        "role" => "coder",
+        "agent_kind" => "copilot"
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/p/demo/new")
+    attrs = %{title: "小改动", executor: "simulated", workflow: "quick", team_id: team.id}
+
+    view |> form("#new-task-form", task: attrs) |> render_submit()
+    assert has_element?(view, "#new-task-form", "单人队 没有这个流程")
+
+    {:ok, _} = Teams.save_workflow(team.id, Workflow.quick())
+    {:ok, view, _html} = live(conn, ~p"/p/demo/new")
+    view |> form("#new-task-form", task: attrs) |> render_submit()
+    assert has_element?(view, "#new-task-form", "单人队 里没有这个流程需要的角色：reviewer")
+
+    {:ok, _} =
+      Teams.create_member(team.id, %{
+        "name" => "rev",
+        "role" => "reviewer",
+        "agent_kind" => "claude"
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/p/demo/new")
+    view |> form("#new-task-form", task: attrs) |> render_submit()
+
+    assert has_element?(view, "#col-todo-cards", "单人队")
+    assert [%{team_id: team_id}] = Enum.filter(Tasks.list_tasks(), &(&1.title == "小改动"))
+    assert team_id == team.id
+  end
+
+  test "starting a real task queues it for its team", %{conn: conn, project: project} do
+    team = Teams.default_team(project.id)
+
+    {:ok, task} =
+      Tasks.create_task(%{
+        "title" => "排队",
+        "project_id" => project.id,
+        "workflow" => "quick",
+        "executor" => "herdr",
+        "team_id" => team.id
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/p/demo/tasks/#{task.id}")
+    view |> element("#task-start") |> render_click()
+
+    assert has_element?(view, "#task-#{task.id}", "排队中")
+    assert %{queued: true, stage: :todo} = Tasks.get_task(task.id)
+  end
+
+  test "the board links to the project's settings", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/p/demo")
+
+    assert {:error, {:live_redirect, %{to: "/p/demo/settings"}}} =
+             view |> element("#project-settings") |> render_click()
   end
 
   test "unknown task ids fall back to the board", %{conn: conn} do

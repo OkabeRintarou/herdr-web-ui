@@ -22,8 +22,12 @@ defmodule HerdrLiveView.Projects do
     |> validate_local_path()
     |> Repo.insert()
     |> case do
-      {:ok, project} -> {:ok, Repo.preload(project, :host)}
-      error -> error
+      {:ok, project} ->
+        HerdrLiveView.Teams.ensure_default_team!(project.id)
+        {:ok, Repo.preload(project, :host)}
+
+      error ->
+        error
     end
   end
 

@@ -4,7 +4,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   import HerdrLiveViewWeb.WorkflowGraph, only: [graph: 1]
 
   alias HerdrLiveView.Herdr.Panes
-  alias HerdrLiveView.Tasks
+  alias HerdrLiveView.{Tasks, Teams}
   alias HerdrLiveView.Tasks.{Demo, Runner, Workflow}
   alias HerdrLiveViewWeb.LiveTerminal
 
@@ -17,8 +17,6 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     attention: %{label: "待人处理", icon: "hero-hand-raised-micro", accent: "text-amber-300"},
     done: %{label: "完成", icon: "hero-check-circle-micro", accent: "text-emerald-300"}
   }
-
-  @workflow_options [{"让 lead 设计", "lead"}, {"标准流程", "standard"}, {"快速修复", "quick"}]
 
   @impl true
   def mount(%{"slug" => slug}, _session, socket) do
@@ -48,10 +46,16 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
     socket
     |> assign(project: project, host: host, status: status, panes: panes, stages: Demo.stages())
+    |> assign_teams()
     |> assign(tasks: Map.new(Tasks.list_tasks(project.id), &{&1.id, &1}), task: nil)
-    |> assign(form: new_task_form(), comment_form: comment_form())
+    |> then(&assign(&1, form: new_task_form(&1), comment_form: comment_form()))
     |> LiveTerminal.init()
     |> stream_columns()
+  end
+
+  defp assign_teams(socket) do
+    teams = Teams.list_teams(socket.assigns.project.id)
+    assign(socket, teams: teams, team_names: Map.new(teams, &{&1.id, &1.name}))
   end
 
   @impl true
@@ -74,8 +78,10 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   defp apply_action(socket, :new, _params) do
+    socket = assign_teams(socket)
+
     socket
-    |> assign(task: nil, page_title: "新建 Task", form: new_task_form())
+    |> assign(task: nil, page_title: "新建 Task", form: new_task_form(socket))
     |> LiveTerminal.watch(nil)
   end
 
@@ -121,18 +127,23 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     do: {:noreply, push_patch(socket, to: ~p"/p/#{socket.assigns.project.slug}")}
 
   def handle_event("validate", %{"task" => params}, socket) do
-    {:noreply,
-     assign(socket, form: new_task_form(params, validate(params, socket.assigns.project)))}
+    {:noreply, assign(socket, form: to_form(params, as: :task, errors: validate(params, socket)))}
   end
 
   def handle_event("create", %{"task" => params}, socket) do
     project = socket.assigns.project
 
-    case validate(params, project) do
+    case validate(params, socket) do
       [] ->
+        team = team_of(socket.assigns.teams, %{team_id: params["team_id"]})
+
         task =
           params
-          |> Map.merge(%{"project_id" => project.id, "workdir" => project.path})
+          |> Map.merge(%{
+            "project_id" => project.id,
+            "workdir" => project.path,
+            "template" => Teams.workflow(team, params["workflow"])
+          })
           |> Runner.new()
 
         {:noreply,
@@ -141,18 +152,23 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
          |> push_patch(to: ~p"/p/#{project.slug}/tasks/#{task.id}")}
 
       errors ->
-        {:noreply, assign(socket, form: new_task_form(params, errors))}
+        {:noreply, assign(socket, form: to_form(params, as: :task, errors: errors))}
     end
   end
 
+  # Real tasks wait for a free slot in their team; the engine's scheduler starts them.
   def handle_event("start", %{"id" => id}, socket) do
-    with_task(socket, id, fn task ->
-      task = Runner.start(task, now())
+    with_task(socket, id, fn
+      %{executor: "herdr", team_id: team_id} = task when is_binary(team_id) ->
+        {Runner.enqueue(task), "已加入 #{socket.assigns.team_names[team_id]} 的队列"}
 
-      if task.step == "design" and task.executor == "simulated",
-        do: schedule_lead(task, 1, nil)
+      task ->
+        task = Runner.start(task, now())
 
-      {task, if(task.step == "design", do: "lead 正在设计流程…", else: "已开始")}
+        if task.step == "design" and task.executor == "simulated",
+          do: schedule_lead(task, 1, nil)
+
+        {task, if(task.step == "design", do: "lead 正在设计流程…", else: "已开始")}
     end)
   end
 
@@ -168,8 +184,13 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     end)
   end
 
-  def handle_event("use_template", %{"id" => id, "template" => template}, socket) do
-    with_task(socket, id, &{Runner.use_template(&1, template, now()), "已改用模板"})
+  def handle_event("use_template", %{"id" => id, "template" => key}, socket) do
+    with_task(socket, id, fn task ->
+      case Teams.workflow(team_of(socket.assigns.teams, task), key) do
+        nil -> {task, "Team 里没有这个流程"}
+        template -> {Runner.use_template(task, template, now()), "已改用模板"}
+      end
+    end)
   end
 
   def handle_event("verdict", %{"id" => id, "verdict" => verdict}, socket) do
@@ -207,13 +228,21 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, columns: @columns, workflow_options: @workflow_options)
+    assigns = assign(assigns, columns: @columns)
 
     ~H"""
     <Layouts.app flash={@flash} active={:projects}>
       <:crumb>
         <span class="truncate font-medium text-zinc-200">{@project.name}</span>
         <span class="truncate font-mono text-xs text-zinc-500">{@host.name}:{@project.path}</span>
+        <.link
+          id="project-settings"
+          navigate={~p"/p/#{@project.slug}/settings"}
+          class="rounded-md p-1 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+          title="项目设置"
+        >
+          <.icon name="hero-cog-6-tooth-micro" class="size-4" />
+        </.link>
       </:crumb>
       <:status>
         <span
@@ -277,6 +306,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               id={dom_id}
               task={task}
               slug={@project.slug}
+              team_name={@team_names[task.team_id]}
               agent_status={agent_status(@panes, task)}
             />
           </div>
@@ -286,6 +316,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
       <.task_drawer
         :if={@live_action == :show and @task}
         task={@task}
+        templates={Teams.workflows(team_of(@teams, @task))}
         panes={@panes}
         host_id={@host.id}
         live_pane={live_pane(@panes, @task)}
@@ -295,7 +326,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
       <.new_task_modal
         :if={@live_action == :new}
         form={@form}
-        workflow_options={@workflow_options}
+        teams={@teams}
       />
     </Layouts.app>
     """
@@ -304,6 +335,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   attr :id, :string, required: true
   attr :task, :map, required: true
   attr :slug, :string, required: true
+  attr :team_name, :string, default: nil
   attr :agent_status, :string, default: nil
 
   defp task_card(assigns) do
@@ -333,12 +365,19 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
           模拟
         </span>
         <span class="ml-auto truncate text-[11px] text-zinc-500">
-          {workflow_badge(@task)}
+          <span :if={@team_name} class="text-zinc-400">{@team_name} · </span>{workflow_badge(@task)}
         </span>
       </div>
 
       <p class="mt-1.5 line-clamp-2 text-sm leading-snug font-medium text-zinc-100">
         {@task.title}
+      </p>
+
+      <p
+        :if={@task.queued}
+        class="mt-2 inline-flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 text-xs text-zinc-400"
+      >
+        <.icon name="hero-queue-list-micro" class="size-3.5" /> 排队中，等 Team 有空位
       </p>
 
       <p
@@ -385,6 +424,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   attr :task, :map, required: true
+  attr :templates, :list, required: true
   attr :panes, :map, required: true
   attr :host_id, :string, required: true
   attr :live_pane, :string, default: nil
@@ -471,6 +511,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
         <.decision_bar
           :if={@task.attention}
           task={@task}
+          templates={@templates}
           host_id={@host_id}
           live_pane={@live_pane}
           comment_form={@comment_form}
@@ -609,6 +650,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   attr :task, :map, required: true
+  attr :templates, :list, required: true
   attr :host_id, :string, required: true
   attr :live_pane, :string, default: nil
   attr :comment_form, :any, required: true
@@ -670,7 +712,7 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
                   <.icon name="hero-arrow-path-micro" class="size-4" /> 让 lead 重新设计
                 </button>
                 <.decision_button
-                  :for={tpl <- Workflow.templates()}
+                  :for={tpl <- @templates}
                   id={"use-template-#{tpl.id}"}
                   event="use_template"
                   task_id={@task.id}
@@ -862,9 +904,17 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
   end
 
   attr :form, :any, required: true
-  attr :workflow_options, :list, required: true
+  attr :teams, :list, required: true
 
   defp new_task_modal(assigns) do
+    team = Enum.find(assigns.teams, &(&1.id == assigns.form[:team_id].value))
+
+    assigns =
+      assign(assigns,
+        workflow_options:
+          [{"让 lead 设计", "lead"}] ++ for(wf <- Teams.workflows(team), do: {wf.name, wf.id})
+      )
+
     ~H"""
     <div
       id="new-task-modal"
@@ -914,14 +964,24 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
               class={field_class()}
             />
           </.field>
-          <.field label="执行方式">
-            <.input
-              field={@form[:executor]}
-              type="select"
-              options={[{"herdr agent 真实执行", "herdr"}, {"模拟（演示）", "simulated"}]}
-              class={field_class()}
-            />
-          </.field>
+          <div class="grid grid-cols-2 gap-3">
+            <.field label="执行方式">
+              <.input
+                field={@form[:executor]}
+                type="select"
+                options={[{"herdr agent 真实执行", "herdr"}, {"模拟（演示）", "simulated"}]}
+                class={field_class()}
+              />
+            </.field>
+            <.field label="Team">
+              <.input
+                field={@form[:team_id]}
+                type="select"
+                options={Enum.map(@teams, &{&1.name, &1.id})}
+                class={field_class()}
+              />
+            </.field>
+          </div>
           <div class="grid grid-cols-2 gap-3">
             <.field label="优先级">
               <.input
@@ -1167,8 +1227,30 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
     end
   end
 
-  defp validate(params, project) do
+  defp validate(params, socket) do
+    project = socket.assigns.project
+    team = team_of(socket.assigns.teams, %{team_id: params["team_id"]})
     title = if String.trim(params["title"] || "") == "", do: [title: {"标题不能为空", []}]
+
+    workflow =
+      if params["workflow"] == "lead",
+        do: %{steps: [%{role: "lead"}]},
+        else: Teams.workflow(team, params["workflow"])
+
+    team_errors =
+      cond do
+        team == nil ->
+          [team_id: {"请选择 Team", []}]
+
+        workflow == nil ->
+          [workflow: {"#{team.name} 没有这个流程", []}]
+
+        (missing = Teams.missing_roles(team, workflow)) != [] ->
+          [workflow: {"#{team.name} 里没有这个流程需要的角色：#{Enum.join(missing, "、")}", []}]
+
+        true ->
+          []
+      end
 
     herdr =
       if params["executor"] == "herdr" do
@@ -1179,15 +1261,25 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
         ]
       end
 
-    Enum.filter(List.wrap(title) ++ List.wrap(herdr), & &1)
+    Enum.filter(List.wrap(title) ++ team_errors ++ List.wrap(herdr), & &1)
   end
 
-  defp new_task_form(
-         params \\ %{"priority" => "P2", "workflow" => "standard", "executor" => "herdr"},
-         errors \\ []
-       ) do
-    to_form(params, as: :task, errors: errors)
+  defp new_task_form(socket) do
+    team = Enum.find(socket.assigns.teams, & &1.is_default) || List.first(socket.assigns.teams)
+    workflow = Enum.at(Teams.workflows(team), 0)
+
+    to_form(
+      %{
+        "priority" => "P2",
+        "workflow" => (workflow && workflow.id) || "lead",
+        "executor" => "herdr",
+        "team_id" => team && team.id
+      },
+      as: :task
+    )
   end
+
+  defp team_of(teams, %{team_id: team_id}), do: Enum.find(teams, &(&1.id == team_id))
 
   defp comment_form, do: to_form(%{"text" => ""}, as: :comment)
 

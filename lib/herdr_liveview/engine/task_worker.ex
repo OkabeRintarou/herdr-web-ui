@@ -8,7 +8,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
   alias HerdrLiveView.Engine.{Herdr, Step}
   alias HerdrLiveView.Herdr.Panes
-  alias HerdrLiveView.{Projects, Tasks}
+  alias HerdrLiveView.{Projects, Tasks, Teams}
   alias HerdrLiveView.Tasks.Runner
 
   @tick_ms 5_000
@@ -31,6 +31,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
        task_id: task_id,
        task: nil,
        host: nil,
+       team: nil,
        dispatched: nil,
        saw_working: false,
        nudged: false,
@@ -46,7 +47,8 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     with %{} = task <- Tasks.get_task(state.task_id),
          %{host: host} <- task.project_id && Projects.get_project(task.project_id) do
       Phoenix.PubSub.subscribe(HerdrLiveView.PubSub, Panes.topic(host.id))
-      handle_task(task, recover(task, %{state | host: host}))
+      state = %{state | host: host, team: Teams.get_team(task.team_id)}
+      handle_task(task, recover(task, state))
     else
       _ -> {:stop, :normal, state}
     end
@@ -127,11 +129,15 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   defp dispatch(%{task: task, host: host} = state) do
     role = Runner.current_step(task).role
     File.mkdir_p!(Step.task_dir(task))
+    # re-read so edits to the team's member templates apply to the next agent we start
+    state = %{state | team: Teams.get_team(task.team_id)}
 
-    with {:ok, task, agent} <- ensure_agent(host, task, role) do
+    with {:ok, task, agent} <- ensure_agent(host, state.team, task, role) do
       task = %{task | pane_id: agent["pane_id"]}
 
-      case Herdr.impl().prompt(host, agent["name"], Step.prompt(task)) do
+      prompt = Step.prompt(task, Teams.member_for(state.team, role))
+
+      case Herdr.impl().prompt(host, agent["name"], prompt) do
         :ok ->
           agents = Map.put(task.agents, role, Map.put(agent, "step", Step.key(task)))
           {:ok, task} = Tasks.save_task(%{task | agents: agents, agent_status: "working"})
@@ -168,8 +174,13 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     escalate(state, "无法启动 #{role} 或发送指令：#{format(reason)}")
   end
 
-  defp ensure_agent(host, task, role) do
-    name = get_in(task.agents, [role, "name"]) || agent_name(task, role)
+  defp ensure_agent(host, team, task, role) do
+    member = Teams.member_for(team, role)
+
+    name =
+      get_in(task.agents, [role, "name"]) || agent_name(task, (member && member.name) || role)
+
+    spec = agent_command(member)
 
     case Herdr.impl().find_agent(host, name) do
       {:ok, pane} ->
@@ -180,13 +191,13 @@ defmodule HerdrLiveView.Engine.TaskWorker do
 
         case get_in(task.agents, [role, "pane_id"]) do
           pane when is_map_key(panes, pane) ->
-            start_agent(host, task, role, pane, name)
+            start_agent(host, spec, task, role, pane, name)
 
           _ ->
             with {:ok, task, pane} <- open_pane(host, task, panes) do
               agents = Map.put(task.agents, role, %{"name" => name, "pane_id" => pane})
               {:ok, task} = Tasks.save_task(%{task | agents: agents, pane_id: pane})
-              start_agent(host, task, role, pane, name)
+              start_agent(host, spec, task, role, pane, name)
             end
         end
     end
@@ -214,9 +225,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     end
   end
 
-  defp start_agent(host, task, role, pane, name, attempts \\ 10) do
-    {kind, args} = agent_command()
-
+  defp start_agent(host, {kind, args} = spec, task, role, pane, name, attempts \\ 10) do
     case Herdr.impl().start_agent(host, name, kind, pane, args) do
       :ok ->
         adopt(task, role, name, pane)
@@ -224,7 +233,7 @@ defmodule HerdrLiveView.Engine.TaskWorker do
       # a freshly opened pane needs a moment before its shell prompt is ready
       {:error, {:herdr, %{"code" => "agent_pane_busy"}}} when attempts > 1 ->
         Process.sleep(1_000)
-        start_agent(host, task, role, pane, name, attempts - 1)
+        start_agent(host, spec, task, role, pane, name, attempts - 1)
 
       # the agent launched but stopped at its own startup dialog; prompting will surface that
       {:error, {:herdr, %{"code" => code}}} = error
@@ -311,7 +320,10 @@ defmodule HerdrLiveView.Engine.TaskWorker do
   defp nudge(state, problem), do: escalate(state, "agent 停下了但仍未交付结果：" <> problem)
 
   defp check_timeout(state) do
-    limit = Application.get_env(:herdr_liveview, :step_timeout_ms, 60 * 60_000)
+    limit =
+      if state.team,
+        do: state.team.step_timeout_min * 60_000,
+        else: Application.get_env(:herdr_liveview, :step_timeout_ms, 60 * 60_000)
 
     if elapsed(state) > limit,
       do: escalate(state, "本步超过 #{div(limit, 60_000)} 分钟仍未完成"),
@@ -325,10 +337,13 @@ defmodule HerdrLiveView.Engine.TaskWorker do
     %{state | task: task}
   end
 
-  defp agent_command do
+  # Tasks without a team (from before teams existed) fall back to the configured agent CLI.
+  defp agent_command(nil) do
     {Application.get_env(:herdr_liveview, :agent_kind, "copilot"),
      Application.get_env(:herdr_liveview, :agent_args, [])}
   end
+
+  defp agent_command(member), do: {member.agent_kind, OptionParser.split(member.agent_args)}
 
   # herdr agent names: [a-z][a-z0-9_-]{0,31}
   defp agent_name(task, role) do

@@ -80,4 +80,12 @@ defmodule HerdrLiveView.Tasks do
 
     :ok
   end
+
+  @doc "Gives tasks created before teams existed the project's default team."
+  def assign_team!(project_id, team_id) do
+    from(t in TaskRecord, where: t.project_id == ^project_id and is_nil(t.team_id))
+    |> Repo.update_all(set: [team_id: team_id])
+
+    :ok
+  end
 end

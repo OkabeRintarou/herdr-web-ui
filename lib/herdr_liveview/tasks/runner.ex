@@ -5,6 +5,10 @@ defmodule HerdrLiveView.Tasks.Runner do
   """
   alias HerdrLiveView.Tasks.Workflow
 
+  @doc """
+  `attrs["workflow"]` is `"lead"` or a template key; pass the team's template itself as
+  `attrs["template"]` (the built-in presets are looked up by key otherwise).
+  """
   def new(attrs, now \\ DateTime.utc_now()) do
     source = attrs["workflow"] || "lead"
 
@@ -19,7 +23,7 @@ defmodule HerdrLiveView.Tasks.Runner do
       # where agents work: the project folder now, the task's worktree later
       workdir: attrs["workdir"] || "",
       workflow_source: source,
-      workflow: Workflow.template(source),
+      workflow: attrs["template"] || Workflow.template(source),
       proposal: nil,
       previous_workflow: nil,
       step: nil,
@@ -38,12 +42,22 @@ defmodule HerdrLiveView.Tasks.Runner do
       executor: attrs["executor"] || "simulated",
       workspace_id: nil,
       # role => %{"name" => agent name, "pane_id" => pane}; string keys survive JSON as-is
-      agents: %{}
+      agents: %{},
+      team_id: blank_to_nil(attrs["team_id"]),
+      queued: false
     }
   end
 
-  def start(%{workflow: nil} = task, now), do: design(task, now)
-  def start(task, now), do: enter(task, Workflow.first_step(task.workflow), now)
+  @doc "Waits for a free slot in the team; the engine's scheduler starts it."
+  def enqueue(task), do: %{task | queued: true}
+
+  def start(task, now), do: do_start(%{task | queued: false}, now)
+
+  defp do_start(%{workflow: nil} = task, now), do: design(task, now)
+  defp do_start(task, now), do: enter(task, Workflow.first_step(task.workflow), now)
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   def design(task, now) do
     %{task | step: "design", stage: :plan, attention: nil, agent_status: "working", paused: false}
@@ -73,11 +87,11 @@ defmodule HerdrLiveView.Tasks.Runner do
     %{task | previous_workflow: workflow, proposal: nil} |> design(now)
   end
 
-  def use_template(task, template_id, now) do
+  def use_template(task, template, now) do
     %{
       task
-      | workflow: Workflow.template(template_id),
-        workflow_source: template_id,
+      | workflow: template,
+        workflow_source: template.id,
         proposal: nil
     }
     |> Map.put(:attention, nil)

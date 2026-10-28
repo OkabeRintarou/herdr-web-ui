@@ -37,6 +37,8 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
     field(:executor, :string, default: "simulated")
     field(:workspace_id, :string)
     field(:agents, :map, default: %{})
+    field(:team_id, :string)
+    field(:queued, :boolean, default: false)
 
     timestamps()
   end
@@ -44,7 +46,7 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
   @fields ~w(id title description priority workdir project_id workflow_source stage step paused
              cancelled pane_id agent_status stage_since last_bounce workflow proposal
              previous_workflow visits edge_counts attention timeline artifacts executor
-             workspace_id agents)a
+             workspace_id agents team_id queued)a
 
   @required ~w(id title priority workflow_source stage stage_since)a
 
@@ -67,8 +69,8 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
     |> Map.merge(%{
       description: r.description || "",
       workdir: r.workdir || "",
-      workflow: decode_workflow(r.workflow),
-      previous_workflow: decode_workflow(r.previous_workflow),
+      workflow: Workflow.decode(r.workflow),
+      previous_workflow: Workflow.decode(r.previous_workflow),
       proposal: decode_proposal(r.proposal),
       attention: decode_attention(r.attention),
       timeline: Enum.map(r.timeline, &decode_entry/1)
@@ -78,28 +80,8 @@ defmodule HerdrLiveView.Tasks.TaskRecord do
   defp decode_proposal(nil), do: nil
 
   defp decode_proposal(%{"workflow" => wf}) do
-    workflow = decode_workflow(wf)
+    workflow = Workflow.decode(wf)
     %{workflow: workflow, checks: Workflow.validate(workflow)}
-  end
-
-  defp decode_workflow(nil), do: nil
-
-  defp decode_workflow(wf) do
-    wf
-    |> pick(~w(id name version rationale)a)
-    |> Map.merge(%{
-      source: enum(wf["source"], [:template, :lead]),
-      steps:
-        Enum.map(wf["steps"], fn step ->
-          step
-          |> pick(~w(id label role output)a)
-          |> Map.put(:phase, enum(step["phase"], [:plan, :implement, :attention]))
-        end),
-      transitions:
-        Map.new(wf["transitions"], fn {from, ts} ->
-          {from, Enum.map(ts, &pick(&1, ~w(on to max)a))}
-        end)
-    })
   end
 
   defp decode_attention(nil), do: nil
