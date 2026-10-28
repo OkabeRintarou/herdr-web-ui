@@ -28,7 +28,7 @@ defmodule HerdrLiveView.Engine.Design do
     #{roster(team)}
     另有 human 表示需要人来确认的步骤（例如最终验收）。
     #{templates(team)}#{previous(task)}#{Step.feedback(task)}
-    把流程写成 JSON 文件 #{Step.result_path(task)}，格式示例：
+    用你的写文件工具（不要用 shell 命令）把流程写成 JSON 文件 #{Step.result_path(task)}，格式示例：
     #{example()}
 
     规则：

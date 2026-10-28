@@ -719,9 +719,16 @@ defmodule HerdrLiveViewWeb.TaskBoardLive do
                   <div>
                     <.icon name="hero-command-line" class="size-8 text-zinc-700" />
                     <p class="mt-3 text-sm text-zinc-500">
-                      {if @task.pane_id,
-                        do: "演示 pane #{@task.pane_id} 不在当前 herdr session 中",
-                        else: "当前没有关联的 agent pane"}
+                      {cond do
+                        @task.executor == "herdr" and @task.stage == :done ->
+                          "task 已结束，agent 已回收"
+
+                        @task.pane_id ->
+                          "pane #{@task.pane_id} 已不在当前 herdr session 中"
+
+                        true ->
+                          "当前没有关联的 agent pane"
+                      end}
                     </p>
                   </div>
                 </div>

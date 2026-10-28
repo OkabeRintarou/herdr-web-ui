@@ -1,10 +1,12 @@
 import Config
 
 config :herdr_liveview, HerdrLiveView.Repo,
-  database: Path.expand("../.state/herdr_liveview_dev.db", __DIR__),
+  # a second dev instance (e.g. against a throwaway herdr session) needs its own database
+  database:
+    System.get_env("DATABASE_PATH") || Path.expand("../.state/herdr_liveview_dev.db", __DIR__),
   pool_size: 5
 
-config :herdr_liveview, seed_demo: true
+config :herdr_liveview, seed_demo: System.get_env("HERDR_LIVEVIEW_SEED_DEMO", "true") == "true"
 
 # For development, we disable any cache and enable
 # debugging and code reloading.

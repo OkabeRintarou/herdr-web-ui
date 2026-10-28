@@ -58,7 +58,7 @@ defmodule HerdrLiveView.Engine.Step do
     task 共享目录：#{dir}
     之前各步的产出都在这个目录里；不要把这个目录提交到 git。
 
-    完成后必须写结果文件 #{result_path(task)}，内容是一个 JSON 对象：
+    完成后必须用你的写文件工具（不要用 shell 命令）写结果文件 #{result_path(task)}，内容是一个 JSON 对象：
     {"verdict": "<下面之一>", "summary": "一两句话说明结论"}
     可选 verdict：
     #{Enum.join(verdicts, "\n")}
